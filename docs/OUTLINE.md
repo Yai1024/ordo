@@ -235,8 +235,11 @@ project_basic_cpp/
     ├── test_framework.h             [M0]  极简断言宏（零第三方依赖）
     ├── test_main.cpp                 [M0]  测试入口：注册并运行所有用例
     ├── test_result.cpp              [M1]  Result/ErrorCode 行为
+    ├── test_types.cpp               [M1]  时间字符串解析/格式化、trim 边界
     ├── test_csv.cpp                 [M1]  含逗号、引号、空字段、BOM
+    ├── test_file_repository.cpp     [M1]  CSV 往返、损坏文件、原子替换
     ├── test_priority.cpp            [M1]  排序稳定性与并列规则
+    ├── test_task_service.cpp        [M1]  假仓库驱动的业务规则
     ├── test_packer.cpp              [M2]  恰好装满、超载、零时长
     └── test_sm2.cpp                 [M3]  间隔序列与边界
 ```

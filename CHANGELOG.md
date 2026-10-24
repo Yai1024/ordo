@@ -17,8 +17,18 @@
   - `README.md`、`CONTRIBUTING.md`、`LICENSE`（MIT）
   - `include/ordo/version.h`、`src/main.cpp`：可编译的最小可执行体
 
+- 2026-10-24 · **M1 基本要求**
+  - `core/`：`Result<T>` / `Status` / `ErrorCode`、`Task` 与不变量校验、时间与文本工具
+  - `io/`：RFC 4180 CSV 切分/转义、`CsvTaskRepository`（临时文件 + 原子替换）
+  - `algo/`：加权打分 `score_weighted` / `rank_by_score`、最早截止优先 `rank_by_edf`
+  - `app/`：`TaskService` 增删改查、排序入口与统计；`AppContext` 注入仓库、流与时钟
+  - `cli/`：命令注册表、六个 `task.*` 命令、文本交互菜单
+  - `main.cpp`：依赖装配、UTF-8 控制台、Windows 宽命令行参数转 UTF-8
+  - 测试：41 个用例（core / CSV / 仓库往返 / 排序 / 服务）
+  - 文档：新增 `docs/DATA-FORMAT.md`
+  - 构建：静态链接 C++ 运行库，产物 exe 不依赖 PATH 中的 MinGW DLL
+
 ### Planned
-- M1 基本要求：任务 CRUD、CSV 持久化、加权排序与 EDF、文本菜单
 - M2 编排：空闲时段推导、时间块装箱、冲突告警
 - M3 长期能力：执行日志、周统计、SM-2 间隔复习
 - M4 交付：测试数据集、实验报告、演示脚本
