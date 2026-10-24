@@ -28,7 +28,16 @@
   - 文档：新增 `docs/DATA-FORMAT.md`
   - 构建：静态链接 C++ 运行库，产物 exe 不依赖 PATH 中的 MinGW DLL
 
+- 2026-10-24 · **M1.5 图形界面**
+  - `ui/AppModel`：GUI 无关的界面模型（表单解析、展示行、查询与统计）
+  - `gui/`：Win32 主窗口、任务对话框、DPI 缩放与 UTF-8/UTF-16 转换
+  - 新增产物 `bin/ordo-gui.exe`：增删改查、状态筛选、两种排序、实时统计
+  - 右侧预留"今日计划"区域，M2 接入后显示时间块
+  - `Makefile` 增加 `gui` / `run-gui`；非 Windows 平台仍只构建 CLI
+  - 文档：新增 `docs/adr/0002-gui-layer.md`、`docs/GUI-INTERFACE.md`
+  - 测试：49 个用例（新增 AppModel 的 8 个表单与展示映射用例）
+
 ### Planned
-- M2 编排：空闲时段推导、时间块装箱、冲突告警
+- M2 编排：空闲时段推导、时间块装箱、冲突告警（界面围绕 `ui::AppModel` 的计划视图设计）
 - M3 长期能力：执行日志、周统计、SM-2 间隔复习
 - M4 交付：测试数据集、实验报告、演示脚本

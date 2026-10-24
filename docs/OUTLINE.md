@@ -5,7 +5,7 @@
 >
 > - 文档版本：`0.1.0-draft`
 > - 生效日期：2026-10-24
-> - 适用仓库：`project_basic_cpp`（本地库，尚未设远端）
+> - 适用仓库：`project_basic_cpp`（GitHub `Yai1024/ordo`，私有，main 分支）
 > - 对应课程：《高级语言程序设计》综合实验大作业 · **选题 01 学习任务安排系统**
 > - 维护人：Jerry
 
@@ -91,7 +91,8 @@ Ordo 不是一次性的作业程序，而是一个**每学期换数据、不换�
 
 ### 2.3 明确不做（防烂尾清单）
 
-- 不做图形界面（作业明确不要求，且会吃掉全部时间）。
+- ~~不做图形界面~~ → **已调整（ADR-0002）**：加入基础 Win32 GUI（M1.5），
+  但只做 Windows 原生控件；外部 GUI 通过 `ui::AppModel` 接入，不做自绘动画与复杂视觉。
 - 不做数据库、不做网络同步、不做多用户。
 - 不做自然语言录入（"下周三前写完高数"这类解析留到 v2 以后，且必须先有 v1）。
 - 不做跨平台打包；保证源码在 GCC/Clang/MSVC 下可编译即可。
@@ -142,6 +143,16 @@ Ordo 不是一次性的作业程序，而是一个**每学期换数据、不换�
 `algo/` 全部是**纯函数**（给定输入必得同一输出），可以在没有文件、没有菜单的情况下单测；
 `io/` 藏在接口后面，以后从 CSV 换成 JSON 只改一个文件。这两点是"长期可维护"的全部技术含义。
 
+**M1.5 补充（ADR-0002）**：L1 有两个适配器——`cli/` 直接调用 `app/`；
+`gui/` 经 `ui/`（GUI 无关的界面模型）调用 `app/`。`ui/` 只做表单解析与展示映射，
+不放业务规则；`gui/` 只做窗口与控件，不碰文件。因此依赖方向是：
+
+```
+cli/ ──────────────┐
+                   ├──▶ app/ ──▶ { algo/, io/ }
+gui/ ──▶ ui/ ──────┘
+```
+
 ---
 
 ## 5. 文件预期架构
@@ -186,8 +197,10 @@ project_basic_cpp/
 ├── docs/
 │   ├── OUTLINE.md                   [M0]  ← 本文件
 │   ├── DATA-FORMAT.md               [M1]  字段定义、编码、边界值（§9 的展开）
+│   ├── GUI-INTERFACE.md             [M1.5] 外部 GUI 接入契约（AppModel）
 │   ├── adr/
-│   │   └── 0001-architecture.md     [M0]  架构决策记录第 1 号
+│   │   ├── 0001-architecture.md     [M0]  架构决策记录第 1 号
+│   │   └── 0002-gui-layer.md        [M1.5] GUI 适配器与界面模型层
 │   └── report/                      [M4]  实验报告与演示脚本
 │       ├── report.md                [M4]  作业要求的实验报告
 │       └── demo.md                  [M4]  演示流程脚本（逐条命令）
@@ -219,17 +232,26 @@ project_basic_cpp/
 │   │   ├── task_service.h           [M1]  增删改查 + 统计
 │   │   └── plan_service.h           [M2]  编排：空闲时段 → 装箱 → 冲突告警
 │   │
-│   └── cli/                               交互层
-│       ├── command.h                [M1]  Command 抽象基类
-│       ├── dispatcher.h             [M1]  命令注册表与分发
-│       ├── menu.h                   [M1]  文本菜单与输入校验
-│       └── commands/
-│           ├── task_cmd.h           [M1]  task add/list/done/edit/remove
-│           ├── plan_cmd.h           [M2]  plan today/week
-│           └── stats_cmd.h          [M3]  stats report
+│   ├── cli/                               交互层（命令行适配器）
+│   │   ├── command.h                [M1]  Command 抽象基类
+│   │   ├── dispatcher.h             [M1]  命令注册表与分发
+│   │   ├── menu.h                   [M1]  文本菜单与输入校验
+│   │   └── commands/
+│   │       ├── task_cmd.h           [M1]  task add/list/done/edit/remove
+│   │       ├── plan_cmd.h           [M2]  plan today/week
+│   │       └── stats_cmd.h          [M3]  stats report
+│   │
+│   ├── ui/                                界面模型（GUI 无关，ADR-0002）
+│   │   └── app_model.h              [M1.5] 表单解析、展示行、查询与统计入口
+│   │
+│   └── gui/                               Win32 适配器（仅 Windows）
+│       ├── win32_util.h             [M1.5] UTF-8/UTF-16、DPI 缩放、字体
+│       ├── task_dialog.h            [M1.5] 新增/编辑任务对话框
+│       └── main_window.h            [M1.5] 主窗口、列表、筛选与统计面板
 │
 ├── src/                                  与 include/ordo 镜像（略列同名 .cpp）
-│   └── main.cpp                     [M0]  唯一入口：装配依赖、启动分发器
+│   ├── main.cpp                     [M0]  唯一入口：装配依赖、启动分发器
+│   └── gui/main_gui.cpp             [M1.5] GUI 入口：装配仓库与主窗口
 │
 └── tests/
     ├── test_framework.h             [M0]  极简断言宏（零第三方依赖）
@@ -240,6 +262,7 @@ project_basic_cpp/
     ├── test_file_repository.cpp     [M1]  CSV 往返、损坏文件、原子替换
     ├── test_priority.cpp            [M1]  排序稳定性与并列规则
     ├── test_task_service.cpp        [M1]  假仓库驱动的业务规则
+    ├── test_app_model.cpp           [M1.5] 表单解析与展示行映射
     ├── test_packer.cpp              [M2]  恰好装满、超载、零时长
     └── test_sm2.cpp                 [M3]  间隔序列与边界
 ```
@@ -607,11 +630,13 @@ min_block        = 15
 | --- | --- | --- | --- |
 | **M0 骨架** | 仓库可编译、可测试、可运行 | `mingw32-make && mingw32-make test` 全绿；`ordo --version` 输出正确 | 工程组织 |
 | **M1 基本要求** | 任务 CRUD + 持久化 + 两种排序 + 菜单 | 录入 20 条、重启进程数据仍在；非法输入有明确提示；`task.list --rank score` 排序正确 | 录入/查询/修改/统计、文件保存、异常处理、优先级排序 |
+| **M1.5 图形界面** | Win32 基础 GUI + GUI 无关的 `ui::AppModel` | `bin/ordo-gui.exe` 可完成增删改查、完成、筛选、排序、统计；不显示假计划数据；`mingw32-make test` 全绿 | 图形化交互（用户新增要求，ADR-0002） |
 | **M2 编排** | 空闲时段 → 装箱 → 冲突告警 | `plan today` 输出时间表；超载时给出每条未排任务的 `Warning` | 规则判断、时间安排 |
 | **M3 长期能力** | 日志、统计、SM-2 复习 | `stats.week` 输出完成率与投入分布；复习任务按间隔出现在列表 | 统计、拓展 |
 | **M4 交付** | 测试数据、报告、演示 | `docs/report/report.md` 含至少 1 个失败案例分析与已知问题 | 测试数据、实验报告、演示 |
 
 **里程碑纪律**：一个里程碑未验收，不开启下一个。M2 之前不写任何 SM-2 代码。
+M1.5 先于 M2（ADR-0002）：编排算法的接口要围绕 `ui::AppModel` 的计划视图设计。
 
 ---
 
@@ -648,7 +673,9 @@ min_block        = 15
 | `docs/OUTLINE.md` | **本文件**，工程总纲 |
 | `docs/CODE-GUIDE.txt` | 全库导读：逐文件、逐行代码说明，面向第一次接触项目的人 |
 | `docs/DATA-FORMAT.md` | §9 的完整展开（M1 编写） |
+| `docs/GUI-INTERFACE.md` | 外部 GUI 接入契约：`ui::AppModel` 的职责与调用方式 |
 | `docs/adr/0001-architecture.md` | 四层架构、构建系统、错误模型的决策记录 |
+| `docs/adr/0002-gui-layer.md` | GUI 适配器、界面模型层与 M1.5 的决策记录 |
 | `docs/report/report.md` | 课程实验报告（M4） |
 | `docs/report/demo.md` | 演示脚本（M4） |
 | `CHANGELOG.md` | 版本变更 |

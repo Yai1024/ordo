@@ -3,7 +3,7 @@
 ================================================================================
 
 文件：      docs/CODE-GUIDE.txt
-版本：      0.2.0（M1 基本要求；M1 新增文件见第八部分）
+版本：      0.3.0（M1.5 图形界面；M1/M1.5 新增文件见第八、九部分）
 日期：      2026-10-24
 编码：      UTF-8（Windows 记事本请选"UTF-8"打开，否则中文会乱码）
 
@@ -50,14 +50,17 @@ Ordo 要做的是：
 1.3  现在做到哪一步
 --------------------------------------------------------------------------------
 
-这个项目按里程碑推进，目前完成 M0 与 M1：
+这个项目按里程碑推进，目前完成 M0、M1 与 M1.5：
 
   已完成  ██████  M0 骨架：仓库结构、构建脚本、测试框架、工程文档
   已完成  ██████  M1 基本要求：任务增删改查、CSV 持久化、加权排序 / EDF、文本菜单
+  已完成  ██████  M1.5 图形界面：Win32 界面 + GUI 无关的 ui::AppModel
   未开始  ░░░░░░  M2 时间编排 / M3 统计与复习 / M4 交付材料
 
-所以现在运行 bin/ordo.exe 会进入交互菜单；带参数则执行单条命令。
-主流程是：命令层 → 服务层 → {算法层, 存储层}，全文只用这一条链路。
+现在有两种外壳共用同一套业务：
+  bin/ordo-gui.exe   图形界面（双击或命令行启动）
+  bin/ordo.exe       文本菜单 / 单条命令
+主流程是：外壳 → {ui/ 或 app/} → {算法层, 存储层}，没有第二条链路。
 
 M2 到 M4 分别要做什么，见 docs/OUTLINE.md 第 10 节。
 
@@ -75,12 +78,16 @@ M2 到 M4 分别要做什么，见 docs/OUTLINE.md 第 10 节。
   会发生:  运行程序，打印 "ordo 0.1.0"
   说明:    --version 是命令行参数，程序识别到它就直接打印版本然后退出
 
-  命令 3:  ./bin/ordo
-  会发生:  进入交互菜单（1 添加 / 2 查看 / 3 完成 / 4 修改 / 5 删除 / 6 统计 / 0 退出）
+  命令 3:  ./bin/ordo-gui
+  会发生:  打开图形界面（Windows 原生窗口）
+  说明:    列表、筛选、排序、增删改、统计都在一个窗口里完成
+
+  命令 4:  ./bin/ordo
+  会发生:  进入文本菜单（1 添加 / 2 查看 / 3 完成 / 4 修改 / 5 删除 / 6 统计 / 0 退出）
   说明:    不带参数时进入菜单；带参数则执行一条命令，例如
            ./bin/ordo task list --rank score
 
-  命令 4:  mingw32-make test
+  命令 5:  mingw32-make test
   会发生:  编译测试程序，然后运行 41 个测试用例，全部通过
   成功标志: "41 case(s), 0 assertion failure(s)"
 
@@ -183,6 +190,16 @@ M1 一次性建立了完整的"基本要求"闭环：
 
   data/   tasks.csv  config.ini
   docs/   DATA-FORMAT.md
+
+M1.5（图形界面）新增：
+
+  ui/     app_model.h        GUI 无关的界面模型（未来外部 GUI 的接入点）
+  gui/    win32_util.h       UTF-8/UTF-16、DPI、字体
+          task_dialog.h      添加/编辑任务对话框
+          main_window.h      主窗口、列表、筛选、统计
+  src/gui/main_gui.cpp       GUI 入口（装配仓库与主窗口）
+  docs/   GUI-INTERFACE.md   外部 GUI 接入契约
+  docs/adr/0002-gui-layer.md GUI 层与 M1.5 的决策记录
 
 M2 之后还会创建：
 
@@ -1048,6 +1065,118 @@ tests/test_task_service.cpp    假仓库驱动的 id 分配、拒绝路径、过
 
 命令层没有出现任何文件读写，算法层没有读时钟，存储层只被服务层调用——
 这就是四层架构要守住的全部内容。
+
+================================================================================
+第九部分  M1.5 图形界面导读（GUI 与界面模型）
+================================================================================
+
+9.1  为什么要多出 ui/ 这一层
+
+  需求是"先做最基础的界面，保留接口，后期可以加套外部 GUI"。
+  如果把"读取控件文字、拼 Task、调服务、刷新列表"直接写在 Win32 窗口过程里，
+  将来换成 Qt 或网页就要重写一遍所有表单规则。
+
+  所以拆成两份：
+
+    ui/AppModel    知道"用户填了哪些字段、怎么变成 Task、列表要展示什么"
+    gui/           知道"按钮在哪、列表怎么画、消息怎么收"
+
+  gui/ 只调用 AppModel，不碰 CSV；AppModel 只出现 std::string 与 Result，
+  不出现 HWND 或 wchar_t。外部 GUI 直接复用 AppModel 即可。
+
+  依赖方向：
+
+    gui/ ──▶ ui/ ──▶ app/ ──▶ { algo/, io/ }
+    cli/ ──────────▶ app/
+
+9.2  include/ordo/ui/app_model.h + src/ui/app_model.cpp
+
+  【职责】GUI 无关的界面模型。
+  【数据结构】
+    ListQuery  查询条件：状态过滤、是否只看未完成、排序方式
+    TaskRow    列表一行：id、标题、课程、重要度、预估、截止文本、状态
+    TaskForm   表单原始输入：title/course/importance/estimate/deadline 全是字符串
+  【方法】
+    list(query)       → 调 TaskService::list_ranked，再映射成 TaskRow
+    stats()           → 直接返回 app::Stats
+    form_for(id)      → 编辑对话框的初始值
+    create(form)      → 解析 + 校验 + 落盘，返回新 id
+    update(id, form)  → 更新时保留 review_stage / last_review
+    remove(id)        → 删除
+    set_state(id, s)  → 改状态（标记完成）
+  【关键点】表单解析放在这里，Win32 对话框只负责把控件文字取出来塞进 TaskForm。
+    这样换外壳时，校验规则一条都不用重写。
+
+9.3  include/ordo/gui/win32_util.h + src/gui/win32_util.cpp
+
+  【职责】Win32 适配器的公共工具。
+  【内容】
+    to_wide / to_utf8   UTF-8（契约层）与 UTF-16（Win32 控件）互转
+    scale_for_dpi       96 DPI 的逻辑尺寸 → 当前 DPI 的像素
+    system_dpi          GetDeviceCaps(LOGPIXELSX)
+    create_ui_font      微软雅黑 UI，按 DPI 计算字号
+
+9.4  include/ordo/gui/task_dialog.h + src/gui/task_dialog.cpp
+
+  【职责】添加/编辑任务的模态对话框。
+  【控件】标题、课程、重要度（1-5）、预估、日期时间选择器、状态（仅编辑）、
+    错误提示、保存/取消。
+  【流程】
+    1. 编辑时先调 AppModel::form_for 取初始值；
+    2. 用户点保存 → 组装 TaskForm → AppModel::create/update；
+    3. 失败：把中文错误写进红色提示区，对话框不关闭；
+    4. 成功：置 saved=true，DestroyWindow。
+  【键盘】自定义窗口没有对话框模板，IsDialogMessage 不保证处理
+    Tab / Enter / Esc，因此模态消息循环里显式处理：
+      Tab        GetNextDlgTabItem 切换焦点（支持 Shift+Tab）
+      Enter      触发默认按钮（焦点在"取消"上时则取消）
+      Esc        关闭对话框
+  【为什么用日期选择器】避免手写日期解析；提交时格式化为
+    "YYYY-MM-DD HH:MM" 再交给 AppModel，边界仍然只有一个解析入口。
+
+9.5  include/ordo/gui/main_window.h + src/gui/main_window.cpp
+
+  【职责】主窗口：标题区、工具栏、任务列表、右侧计划占位与统计。
+  【控件】
+    ListView（报表模式）        ID / 标题 / 课程 / 重要度 / 预估 / 截止 / 状态
+    状态筛选 ComboBox           未完成 / 全部 / 待办 / 进行中 / 已完成 / 已放弃
+    排序 ComboBox               默认顺序 / 加权优先级 / 最早截止
+    添加、编辑、标记完成、删除、刷新
+  【数据流】
+    任何动作先调 AppModel → 再 refresh()：重新 list + stats → 重填 ListView
+  【细节】
+    - 选中行后，编辑/完成/删除按钮才可用（LVN_ITEMCHANGED）；
+    - 双击一行等于点"编辑"（NM_DBLCLK）；
+    - 删除前弹 MessageBox 确认；
+    - 排版在 layout() 里按 DPI 缩放，WM_SIZE 时重排；
+    - 右侧"今日计划"只显示空状态，不生成假数据。
+
+9.6  src/gui/main_gui.cpp
+
+  【职责】GUI 入口。
+  【内容】
+    - SetProcessDPIAware + InitCommonControlsEx；
+    - 解析 --data；否则按 exe 位置找仓库的 data/tasks.csv；
+    - 构造 CsvTaskRepository → MainWindow → 消息循环；
+    - 异常在入口统一捕获并弹 MessageBox。
+  【数据路径】GUI 可能被双击启动，当前工作目录不一定是项目根目录，
+    因此默认路径按 exe 位置推导：bin/../data/tasks.csv。
+
+9.7  构建与验证
+
+  mingw32-make           同时产出 bin/ordo.exe 与 bin/ordo-gui.exe
+  mingw32-make gui       只构建 GUI
+  mingw32-make run-gui   构建并启动 GUI
+  mingw32-make test      49 个用例
+
+  已实测的交互：新增（中文标题、日期选择）、回车保存、选中行、
+  标记完成、按状态筛选、编辑对话框预填。
+
+9.8  将来换外壳怎么做
+
+  读 docs/GUI-INTERFACE.md。要点只有一句：
+  新外壳构造 ITaskRepository 与 ui::AppModel，所有动作调用 AppModel，
+  不改 ui/、app/、algo/、io/ 中任何一行。
 
 ================================================================================
                                   文件结束

@@ -14,9 +14,9 @@ Ordo 要回答的是：*今晚这几小时，先做哪件、做多久、哪件�
 
 | 项 | 值 |
 | --- | --- |
-| 版本 | `0.1.0`（M1 基本要求） |
-| 阶段 | 任务 CRUD、CSV 持久化、加权排序 / EDF、文本菜单已可用 |
-| 测试 | 41 个用例全部通过（`mingw32-make test`） |
+| 版本 | `0.1.0`（M1.5 图形界面） |
+| 阶段 | 任务 CRUD、CSV 持久化、加权排序 / EDF、CLI 菜单、Win32 图形界面 |
+| 测试 | 49 个用例全部通过（`mingw32-make test`） |
 | 构建 | 通过（MinGW-w64 g++ 16.2.0） |
 
 ---
@@ -24,14 +24,19 @@ Ordo 要回答的是：*今晚这几小时，先做哪件、做多久、哪件�
 ## 快速开始
 
 ```bash
-mingw32-make            # 编译，产物 bin/ordo.exe
+mingw32-make            # 编译 CLI 与 GUI，产物 bin/ordo.exe、bin/ordo-gui.exe
 mingw32-make test       # 编译并运行全部单元测试
-./bin/ordo --version    # 查看版本
-./bin/ordo              # 进入交互菜单
+./bin/ordo-gui          # 打开图形界面
+./bin/ordo              # 文本菜单（同一套业务能力）
 mingw32-make clean      # 清理
 ```
 
-常用命令：
+![Ordo 主窗口](docs/gui/main-window.png)
+
+图形界面支持：添加 / 编辑 / 标记完成 / 删除、状态筛选、两种排序、实时统计。
+右侧"今日计划"是 M2 的占位区域，不显示假数据。
+
+命令行常用命令：
 
 ```bash
 # 添加：标题与截止时间必填；截止只写日期时按当天 23:59
@@ -66,7 +71,9 @@ mingw32-make clean      # 清理
 | **[`docs/OUTLINE.md`](docs/OUTLINE.md)** | **工程总纲**：分层、文件架构、接口与调用类型、数据规范、里程碑 |
 | **[`docs/CODE-GUIDE.txt`](docs/CODE-GUIDE.txt)** | **全库导读**：给第一次打开项目的人，逐文件逐行讲清每个文件与每行代码 |
 | [`docs/DATA-FORMAT.md`](docs/DATA-FORMAT.md) | 数据文件规范：字段、编码、边界与错误处理 |
+| [`docs/GUI-INTERFACE.md`](docs/GUI-INTERFACE.md) | 外部 GUI 接入契约：`ui::AppModel` 的职责与调用方式 |
 | [`docs/adr/0001-architecture.md`](docs/adr/0001-architecture.md) | 架构决策记录：为什么四层、为什么 Make、为什么不用异常 |
+| [`docs/adr/0002-gui-layer.md`](docs/adr/0002-gui-layer.md) | GUI 适配器、界面模型层与 M1.5 的决策记录 |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | 提交规范与代码风格 |
 | [`CHANGELOG.md`](CHANGELOG.md) | 版本变更 |
 | [`LICENSE`](LICENSE) | MIT |
@@ -77,7 +84,8 @@ mingw32-make clean      # 清理
 
 ## 设计要点（三句话）
 
-1. **四层单向依赖**：`cli → app → {algo, io}`。算法层是纯函数，不碰文件、不问时钟，可独立测试。
+1. **分层单向依赖**：`cli → app → {algo, io}`；GUI 走 `gui → ui → app`。算法层是纯函数，
+   不碰文件、不问时钟，可独立测试；界面外壳可以整体替换。
 2. **错误用返回值而非异常**：空数据、格式错、重复 id 都是可预期的业务分支，用 `Result<T>` 强制处理。
 3. **数据是纯文本**：UTF-8 CSV + INI，Atom 里可读、Excel 里可改、十年后仍能打开。
 
@@ -92,6 +100,10 @@ tests/          测试（零第三方依赖）
 data/           运行期数据（CSV / INI）
 docs/           文档与报告
 ```
+
+- `src/cli/`：命令行适配器
+- `src/ui/`：GUI 无关的界面模型（外部 GUI 的接入点）
+- `src/gui/`：Win32 适配器（仅 Windows）
 
 完整文件清单与每个文件的职责见 `docs/OUTLINE.md` §5.2。
 
