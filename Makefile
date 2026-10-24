@@ -11,7 +11,15 @@ endif
 
 CXX      ?= g++
 CXXFLAGS ?= -std=c++17 -Wall -Wextra -Wpedantic -Wshadow -Iinclude -O2 -g
-LDFLAGS  ?=
+# 静态链接 C++ 运行库：产物 exe 不依赖 PATH 里的 libstdc++/libgcc 版本，
+# 拷到任何 Windows 机器都能直接运行（本机 MSYS2 与 .vscode 两套 MinGW 曾因此冲突）。
+# shell32 用于 main.cpp 从 GetCommandLineW 读取 UTF-8 参数。
+ifeq ($(OS),Windows_NT)
+PLATFORM_LDFLAGS := -static-libgcc -static-libstdc++ -lshell32
+else
+PLATFORM_LDFLAGS :=
+endif
+LDFLAGS  ?= $(PLATFORM_LDFLAGS)
 FORMAT   ?= clang-format
 
 BIN_DIR  := bin
