@@ -23,23 +23,48 @@ LDFLAGS  ?= $(PLATFORM_LDFLAGS)
 FORMAT   ?= clang-format
 
 BIN_DIR  := bin
-APP      := $(BIN_DIR)/ordo
-TEST_BIN := $(BIN_DIR)/ordo_test
 
-APP_SRC  := src/main.cpp
-LIB_SRC  := $(filter-out $(APP_SRC),$(wildcard src/*.cpp src/*/*.cpp src/*/*/*.cpp))
+ifeq ($(OS),Windows_NT)
+EXEEXT   := .exe
+else
+EXEEXT   :=
+endif
+
+APP      := $(BIN_DIR)/ordo$(EXEEXT)
+GUI      := $(BIN_DIR)/ordo-gui$(EXEEXT)
+TEST_BIN := $(BIN_DIR)/ordo_test$(EXEEXT)
+
+CLI_SRC  := src/main.cpp
+GUI_SRC  := $(wildcard src/gui/*.cpp)
+LIB_SRC  := $(filter-out $(CLI_SRC) $(GUI_SRC),$(wildcard src/*.cpp src/*/*.cpp src/*/*/*.cpp))
 TEST_SRC := $(wildcard tests/*.cpp)
 HEADERS  := $(wildcard include/ordo/*.h include/ordo/*/*.h include/ordo/*/*/*.h)
 
+# GUI 只在 Windows 上构建：Win32 控件 + 公共控件。
+ifeq ($(OS),Windows_NT)
+ALL_BINS       := $(APP) $(GUI)
+GUI_CXXFLAGS   := $(CXXFLAGS) -DUNICODE -D_UNICODE -municode -mwindows
+GUI_LDLIBS     := -lcomctl32
+else
+ALL_BINS       := $(APP)
+GUI_CXXFLAGS   := $(CXXFLAGS)
+GUI_LDLIBS     :=
+endif
+
 # ---------- 目标 ----------
 
-.PHONY: all test clean fmt fmt-check help run
+.PHONY: all test clean fmt fmt-check help run gui run-gui
 
-all: $(APP)
+all: $(ALL_BINS)
 
-$(APP): $(LIB_SRC) $(APP_SRC) $(HEADERS)
+$(APP): $(LIB_SRC) $(CLI_SRC) $(HEADERS)
 	@mkdir -p $(BIN_DIR)
-	$(CXX) $(CXXFLAGS) -o $@ $(LIB_SRC) $(APP_SRC) $(LDFLAGS)
+	$(CXX) $(CXXFLAGS) -o $@ $(LIB_SRC) $(CLI_SRC) $(LDFLAGS)
+	@echo "==> built: $@"
+
+$(GUI): $(LIB_SRC) $(GUI_SRC) $(HEADERS)
+	@mkdir -p $(BIN_DIR)
+	$(CXX) $(GUI_CXXFLAGS) -o $@ $(LIB_SRC) $(GUI_SRC) $(LDFLAGS) $(GUI_LDLIBS)
 	@echo "==> built: $@"
 
 $(TEST_BIN): $(LIB_SRC) $(TEST_SRC) $(HEADERS)
@@ -52,6 +77,11 @@ test: $(TEST_BIN)
 
 run: $(APP)
 	@./$(APP)
+
+gui: $(GUI)
+
+run-gui: $(GUI)
+	@./$(GUI)
 
 clean:
 	@rm -rf $(BIN_DIR) build
@@ -68,9 +98,11 @@ fmt-check:
 
 help:
 	@echo "Ordo build targets (Windows: use mingw32-make, POSIX: make):"
-	@echo "  all        compile -> $(APP)"
+	@echo "  all        compile -> $(ALL_BINS)"
 	@echo "  test       compile and run unit tests"
-	@echo "  run        compile and launch"
+	@echo "  run        compile and launch the CLI"
+	@echo "  gui        compile the Win32 GUI (Windows only)"
+	@echo "  run-gui    compile and launch the GUI (Windows only)"
 	@echo "  clean      remove build artifacts"
 	@echo "  fmt        format in place with .clang-format"
 	@echo "  fmt-check  report formatting differences only"
