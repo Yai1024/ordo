@@ -1,0 +1,32 @@
+# ---- 构建产物 ----
+build/
+bin/
+obj/
+*.exe
+*.o
+*.obj
+*.a
+*.lib
+*.dll
+*.pdb
+*.ilk
+
+# ---- 运行期临时文件 ----
+*.tmp
+*.bak
+*.log
+!data/log.csv
+
+# ---- 编辑器 / IDE ----
+.vscode/
+.idea/
+*.code-workspace
+*.user
+*.suo
+*.swp
+*~
+
+# ---- 系统 ----
+Thumbs.db
+desktop.ini
+.DS_Store

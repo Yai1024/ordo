@@ -1,0 +1,31 @@
+# Ordo 代码格式规则
+# 运行：make fmt          （就地格式化 src/ include/ tests/）
+# 检查：make fmt-check    （仅报告差异，不改文件）
+---
+Language:        Cpp
+BasedOnStyle:    LLVM
+Standard:        c++17
+
+AccessModifierOffset: -4
+AlignAfterOpenBracket: Align
+AllowShortBlocksOnASingleLine: Empty
+AllowShortFunctionsOnASingleLine: Inline
+AlwaysBreakTemplateDeclarations: Yes
+BreakBeforeBraces: Attach
+ColumnLimit:     100
+IndentWidth:     4
+TabWidth:        4
+UseTab:          Never
+PointerAlignment: Left
+ReferenceAlignment: Left
+SpaceAfterTemplateKeyword: false
+SortIncludes:    CaseSensitive
+IncludeBlocks:   Regroup
+IncludeCategories:
+  - Regex:           '^<'
+    Priority:        3
+  - Regex:           '^"ordo/'
+    Priority:        1
+  - Regex:           '.*'
+    Priority:        2
+...
