@@ -15,6 +15,7 @@
 #include "ordo/core/result.h"
 #include "ordo/core/task.h"
 #include "ordo/core/types.h"
+#include "ordo/io/config.h"
 #include "ordo/io/repository.h"
 
 namespace ordo {
@@ -30,6 +31,7 @@ struct TaskRow {
     TaskId id{};
     std::string title;
     std::string course;
+    std::string kind_label;  // 课程作业 / 自主学习 / 活动 / 复习考试 / 其他
     int importance{0};
     Minutes estimate{0};
     std::string deadline_text;  // YYYY-MM-DD HH:MM
@@ -40,15 +42,32 @@ struct TaskRow {
 struct TaskForm {
     std::string title;
     std::string course;
+    std::string kind{"other"};         // coursework/selfstudy/activity/review/other
     std::string importance{"3"};
     std::string estimate{"0"};
     std::string deadline;              // YYYY-MM-DD 或 YYYY-MM-DD HH:MM
+    std::string start;                 // 仅活动：固定开始时刻
     std::optional<TaskState> state;    // 新增时忽略；编辑时保留原状态
+};
+
+// 计划视图的一行；字符串已经格式化好，外壳只负责显示。
+struct PlanRow {
+    std::string time_text;  // "18:30 - 19:30"；本周视图带日期
+    std::string title;
+    std::string kind_label;
+};
+
+struct PlanView {
+    std::vector<PlanRow> rows;
+    std::vector<std::string> warnings;  // 已带任务编号与中文原因
+    Minutes total_free{0};              // 计划窗口总时长
+    Minutes total_assigned{0};          // 已排入时间块的总时长
 };
 
 class AppModel {
 public:
-    AppModel(ITaskRepository& repo, std::function<TimePoint()> clock);
+    AppModel(ITaskRepository& repo, std::function<TimePoint()> clock,
+             ScheduleConfig config = ScheduleConfig{});
 
     Result<std::vector<TaskRow>> list(const ListQuery& query) const;
     Result<Stats> stats() const;
@@ -61,11 +80,16 @@ public:
     Status remove(TaskId id);
     Status set_state(TaskId id, TaskState state);
 
+    Result<PlanView> plan_today(RankMode rank = RankMode::Score) const;
+    Result<PlanView> plan_week(RankMode rank = RankMode::Score) const;
+
 private:
     Result<Task> build_task(TaskId id, const TaskForm& form) const;
+    Result<PlanView> plan(bool week, RankMode rank) const;
 
     ITaskRepository& repo_;
     std::function<TimePoint()> clock_;
+    ScheduleConfig config_;
 };
 
 }  // namespace ordo

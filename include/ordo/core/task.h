@@ -16,6 +16,10 @@ namespace ordo {
 
 enum class TaskState { Todo, Doing, Done, Dropped };
 
+// 任务类型决定打分系数与装箱方式（ADR-0003）。
+// Other 是旧数据的默认值，行为等同 SelfStudy。
+enum class TaskKind { CourseWork, SelfStudy, Activity, Review, Other };
+
 constexpr int kMinImportance = 1;
 constexpr int kMaxImportance = 5;
 constexpr int kDefaultImportance = 3;
@@ -30,6 +34,8 @@ struct Task {
     TaskState state{TaskState::Todo};
     int review_stage{0};
     std::optional<TimePoint> last_review;  // 仅 M3 使用，CSV 不持久化
+    TaskKind kind{TaskKind::Other};
+    std::optional<TimePoint> fixed_start;  // 仅 Activity：固定开始时刻
 
     // 不变量校验：失败返回错误码，不做部分修复。
     Status validate() const;
@@ -38,6 +44,16 @@ struct Task {
 // 与 CSV / CLI 共用的枚举文本形式：todo / doing / done / dropped。
 std::string_view to_string(TaskState state) noexcept;
 std::optional<TaskState> parse_task_state(std::string_view text) noexcept;
+
+// 与 CSV / CLI 共用的类型文本形式：coursework / selfstudy / activity / review / other。
+std::string_view to_string(TaskKind kind) noexcept;
+std::optional<TaskKind> parse_task_kind(std::string_view text) noexcept;
+
+// 面向界面的中文类型名：课程作业 / 自主学习 / 活动 / 复习考试 / 其他。
+std::string_view kind_label(TaskKind kind) noexcept;
+
+// 活动类任务带固定开始时间，装订时整块占位、不可拆分。
+bool is_fixed_time(TaskKind kind) noexcept;
 
 // 是否仍需投入时间（todo / doing）。
 bool is_open(TaskState state) noexcept;

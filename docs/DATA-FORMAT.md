@@ -7,7 +7,7 @@
 | 文件 | 阶段 | 作用 |
 | --- | --- | --- |
 | `data/tasks.csv` | M1 | 任务主数据，程序唯一的写入目标 |
-| `data/config.ini` | M1（M2 起读取） | 作息与策略配置；当前版本保留配置位 |
+| `data/config.ini` | M2 | 作息与装箱策略配置，`plan` 命令读取 |
 | `data/log.csv` | M3 | 每次运行的执行日志，追加写 |
 | `data/samples/*.csv` | M4 | 边界测试数据集，只读 |
 
@@ -22,11 +22,14 @@
 首行固定为表头，之后每行一条任务：
 
 ```csv
-id,title,course,importance,estimate,deadline,state,review_stage
-1,"读书,第3章",高等数学,4,90,2026-10-30 23:59,todo,0
+id,title,course,importance,estimate,deadline,state,review_stage,kind,fixed_start
+1,"读书,第3章",高等数学,4,90,2026-10-30 23:59,todo,0,coursework,
+2,社团例会,课外,4,60,2026-10-28 20:00,todo,0,activity,2026-10-28 19:00
 ```
 
 字段顺序固定，**新增字段只能追加到行尾**（保证旧文件可读）。
+读取时同时接受旧 8 列表头（`kind` 默认 `other`、`fixed_start` 为空）与新 10 列表头；
+保存时统一写新表头，旧文件在第一次写入时自动迁移。
 
 ### 2.2 字段定义
 
@@ -40,8 +43,12 @@ id,title,course,importance,estimate,deadline,state,review_stage
 | 6 | `deadline` | datetime | `YYYY-MM-DD HH:MM` | 本地时间；只给日期时按当天 23:59 |
 | 7 | `state` | enum | `todo` / `doing` / `done` / `dropped` | 任务状态 |
 | 8 | `review_stage` | int | ≥ 0 | SM-2 复习阶段，0 表示未进入复习（M3 使用） |
+| 9 | `kind` | enum | `coursework` / `selfstudy` / `activity` / `review` / `other` | 任务类型，决定打分系数与装箱方式；旧行留空按 `other` |
+| 10 | `fixed_start` | datetime | 仅 `activity` 必填，其余必须为空 | 活动的固定开始时刻；活动要求 `estimate > 0` 且 `deadline ≥ fixed_start + estimate` |
 
 `last_review` 只存在于内存中的 `Task` 结构，**不写入 CSV**。
+
+任务类型与编排规则见 `docs/adr/0003-planning.md`。
 
 ### 2.3 CSV 转义规则
 
@@ -68,9 +75,10 @@ allow_split      = true
 min_block        = 15
 ```
 
-- 当前版本（M1）不读取本文件，算法使用内置默认值（每日可投入 480 分钟）。
-- M2 编排功能会读取 `weekday_*` / `weekend_*` 推导空闲时段，读取 `policy.*` 决定装箱策略。
-- 格式为 INI：`key = value`，`#` 或 `;` 开头为注释。
+- M2 起 `plan today` / `plan week` 读取本文件：`weekday_*` / `weekend_*` 推导空闲时段，
+  `policy.*` 决定装箱策略。
+- 文件不存在时使用内置默认值（与上表一致）；键值非法时报错并带行号，不静默降级。
+- 格式为 INI：`key = value`，`#` 或 `;` 开头为注释；未知键忽略，便于以后追加配置。
 
 ---
 
@@ -81,7 +89,7 @@ min_block        = 15
 | 文件不存在 | 视为空表，首次保存时自动创建 | 无 |
 | 空文件 / 只有空行 | 视为空表 | 无 |
 | 表头不匹配 | 整表拒绝加载 | `Corrupted` |
-| 字段数不是 8 | 整表拒绝加载 | `Corrupted` |
+| 字段数不是 8（旧表头）或 10（新表头） | 整表拒绝加载 | `Corrupted` |
 | 引号未闭合 | 整表拒绝加载 | `Corrupted` |
 | 数值字段不是整数 | 整表拒绝加载 | `InvalidFormat` |
 | 日期格式错误 | 整表拒绝加载 | `InvalidFormat` |
@@ -106,7 +114,7 @@ min_block        = 15
 
 | 命令 | 影响的字段 |
 | --- | --- |
-| `task add` | `id` 自动分配；`title/course/importance/estimate/deadline` 来自参数；`state=todo`、`review_stage=0` |
+| `task add` | `id` 自动分配；`title/course/importance/estimate/deadline/kind/fixed_start` 来自参数；`state=todo`、`review_stage=0` |
 | `task edit` | 只改显式给出的字段，其余保持原值 |
 | `task done` | `state` → `done` |
 | `task remove` | 删除整行 |

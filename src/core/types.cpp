@@ -137,6 +137,13 @@ std::string format_date(TimePoint point) {
     return buffer;
 }
 
+std::string format_time(TimePoint point) {
+    const std::tm local = to_local(point);
+    char buffer[8] = {};
+    std::snprintf(buffer, sizeof(buffer), "%02d:%02d", local.tm_hour, local.tm_min);
+    return buffer;
+}
+
 Minutes minutes_between(TimePoint from, TimePoint to) {
     return static_cast<Minutes>(
         std::chrono::duration_cast<std::chrono::minutes>(to - from).count());

@@ -12,7 +12,7 @@ namespace ordo::gui {
 
 class MainWindow {
 public:
-    explicit MainWindow(ITaskRepository& repo);
+    MainWindow(ITaskRepository& repo, ScheduleConfig config);
     ~MainWindow();
 
     MainWindow(const MainWindow&) = delete;
@@ -29,6 +29,7 @@ private:
     void layout();
     void refresh();
     void update_stats();
+    void update_plan();
     void update_buttons();
     void set_status(const std::wstring& text);
 

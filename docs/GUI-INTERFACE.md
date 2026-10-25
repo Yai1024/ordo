@@ -24,11 +24,13 @@ gui/（任何外壳）──▶ ui::AppModel ──▶ app::TaskService ──�
 #include "ordo/ui/app_model.h"
 
 ordo::CsvTaskRepository repo("data/tasks.csv");
-ordo::AppModel model(repo, [] { return ordo::Clock::now(); });
+auto config = ordo::load_config("data/config.ini");
+ordo::AppModel model(repo, [] { return ordo::Clock::now(); }, config.value());
 ```
 
 - `repo` 必须是 `ITaskRepository&`，生命周期长于 `AppModel`。
 - 时钟以函数注入：测试时返回固定时间，正式运行时用 `Clock::now()`。
+- `ScheduleConfig` 由装配点读取后注入；缺省构造使用内置默认值。
 - `AppModel` 自身不保存界面状态（选中行、滚动位置由外壳自己管）。
 
 ## 3. 数据类型
@@ -43,14 +45,17 @@ ordo::AppModel model(repo, [] { return ordo::Clock::now(); });
 
 ### `TaskRow` — 列表一行
 
-`id`、`title`、`course`、`importance`、`estimate`、`deadline_text`（`YYYY-MM-DD HH:MM`）、`state`。
+`id`、`title`、`course`、`kind_label`（中文类型名）、`importance`、`estimate`、
+`deadline_text`（`YYYY-MM-DD HH:MM`）、`state`。
 字符串已经是 UTF-8，外壳负责转成自己的显示编码。
 
 ### `TaskForm` — 新增/编辑表单
 
-`title`、`course`、`importance`、`estimate`、`deadline` 都是**字符串**，
+`title`、`course`、`kind`、`importance`、`estimate`、`deadline`、`start` 都是**字符串**，
 按用户在控件里的原始输入传入；解析与校验由 `AppModel` 完成。
-`state` 只在编辑时使用。
+`kind` 取值 `coursework/selfstudy/activity/review/other`；`start` 只在活动时使用
+（`YYYY-MM-DD HH:MM`），此时 `deadline` 可以留空，由 `AppModel` 按
+`start + estimate` 自动补全。`state` 只在编辑时使用。
 
 ## 4. 方法
 
@@ -63,6 +68,8 @@ ordo::AppModel model(repo, [] { return ordo::Clock::now(); });
 | `update(id, form)` | `Status` | 修改，保留 `review_stage` / `last_review` |
 | `remove(id)` | `Status` | 删除 |
 | `set_state(id, state)` | `Status` | 改状态（标记完成、进行中等） |
+| `plan_today(rank)` | `Result<PlanView>` | 今日计划：时间块 + 告警 + 时长汇总 |
+| `plan_week(rank)` | `Result<PlanView>` | 滚动 7 天计划 |
 
 失败一律通过 `Status { code, message }` 返回，`message` 是可直接显示的中文。
 
@@ -89,21 +96,35 @@ ordo::AppModel model(repo, [] { return ordo::Clock::now(); });
 - 当前实现是单线程。若外壳在后台线程调用 `AppModel`，需要自己加锁，
   `ITaskRepository` 与 `CsvTaskRepository` 都不是线程安全的。
 
-## 7. 计划视图的扩展点（M2）
+## 7. 计划视图（M2 已定稿）
 
-右侧"今日计划"目前是占位文本，不显示假数据。M2 会在 `AppModel` 上增加
-形如下面的方法，外壳只需要多渲染一块区域：
+`AppModel` 提供两个方法，返回已经格式化好的展示数据：
 
 ```cpp
-struct PlanRow {          // 示意，M2 定稿时会写入本节
-    std::string time_text;
-    std::string title;
-    std::string note;
+struct PlanRow {
+    std::string time_text;    // "18:30 - 19:30"
+    std::string title;        // 任务标题
+    std::string kind_label;   // 课程作业 / 自主学习 / 活动 / 复习考试 / 其他
 };
-Result<PlanView> plan_today();
+
+struct PlanView {
+    std::vector<PlanRow> rows;      // 按开始时间升序
+    std::vector<std::string> warnings;  // 已带任务编号与中文原因
+    Minutes total_free{0};
+    Minutes total_assigned{0};
+};
+
+Result<PlanView> plan_today(RankMode rank = RankMode::Score) const;
+Result<PlanView> plan_week(RankMode rank = RankMode::Score) const;
 ```
 
-在 M2 定稿前，任何外壳都不应假设时间块的字段名。
+外壳只需要：
+
+1. 调 `plan_today()` / `plan_week()`；
+2. 失败时显示 `status.message`；
+3. 成功时渲染 `rows`、`warnings` 与两个时长数字。
+
+计划不持久化，每次调用都按当前任务与配置重新计算。
 `AppModel` 的现有方法签名保持稳定；新增方法向后兼容。
 
 ## 8. 替换 Win32 外壳

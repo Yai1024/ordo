@@ -9,6 +9,23 @@ double clamp01(double value) {
     return std::clamp(value, 0.0, 1.0);
 }
 
+// 类型系数只调整相对顺序，不改变"超期优先"与并列规则（ADR-0003）。
+double kind_coefficient(TaskKind kind) {
+    switch (kind) {
+        case TaskKind::CourseWork:
+            return 1.15;
+        case TaskKind::Review:
+            return 1.10;
+        case TaskKind::SelfStudy:
+            return 0.90;
+        case TaskKind::Activity:
+            return 1.00;  // 活动按固定时间占位，不参与顺序装箱
+        case TaskKind::Other:
+            return 1.00;
+    }
+    return 1.00;
+}
+
 }  // namespace
 
 double score_weighted(const Task& task, const ScoreContext& context) {
@@ -31,7 +48,8 @@ double score_weighted(const Task& task, const ScoreContext& context) {
     const double effort =
         1.0 / (1.0 + static_cast<double>(std::max<Minutes>(0, task.estimate)) / capacity);
 
-    return 100.0 * (0.5 * importance + 0.3 * urgency + 0.2 * effort);
+    return 100.0 * (0.5 * importance + 0.3 * urgency + 0.2 * effort) *
+           kind_coefficient(task.kind);
 }
 
 std::vector<TaskId> rank_by_score(const std::vector<Task>& tasks, ScoreFn score,

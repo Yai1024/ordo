@@ -61,9 +61,9 @@ void show_error(HWND parent, const Status& status) {
 
 }  // namespace
 
-MainWindow::MainWindow(ITaskRepository& repo)
+MainWindow::MainWindow(ITaskRepository& repo, ScheduleConfig config)
     : background_(CreateSolidBrush(kBackground)),
-      model_(repo, [] { return Clock::now(); }) {}
+      model_(repo, [] { return Clock::now(); }, config) {}
 
 MainWindow::~MainWindow() {
     if (font_ != nullptr) {
@@ -208,6 +208,12 @@ LRESULT MainWindow::handle(UINT message, WPARAM wparam, LPARAM lparam) {
             HDC dc = reinterpret_cast<HDC>(wparam);
             SetBkMode(dc, TRANSPARENT);
             const int id = GetDlgCtrlID(reinterpret_cast<HWND>(lparam));
+            if (id == kPlanText) {
+                // 只读 EDIT 走 WM_CTLCOLORSTATIC；保持白底，像一块可滚动的纸。
+                SetBkColor(dc, RGB(255, 255, 255));
+                SetTextColor(dc, kTextColor);
+                return reinterpret_cast<LRESULT>(GetSysColorBrush(COLOR_WINDOW));
+            }
             if (id == kTitle) {
                 SetTextColor(dc, kTitleColor);
             } else if (id == kSubtitle || id == kStatus) {
@@ -305,10 +311,10 @@ void MainWindow::create_children() {
         int format;
     };
     const ColumnSpec columns[] = {
-        {L"ID", 56, LVCFMT_LEFT},        {L"标题", 240, LVCFMT_LEFT},
-        {L"课程", 110, LVCFMT_LEFT},     {L"重要度", 70, LVCFMT_CENTER},
-        {L"预估(分)", 80, LVCFMT_RIGHT}, {L"截止时间", 140, LVCFMT_LEFT},
-        {L"状态", 80, LVCFMT_LEFT},
+        {L"ID", 56, LVCFMT_LEFT},        {L"标题", 220, LVCFMT_LEFT},
+        {L"类型", 76, LVCFMT_LEFT},      {L"课程", 90, LVCFMT_LEFT},
+        {L"重要度", 70, LVCFMT_CENTER},  {L"预估(分)", 80, LVCFMT_RIGHT},
+        {L"截止时间", 130, LVCFMT_LEFT}, {L"状态", 80, LVCFMT_LEFT},
     };
     for (int i = 0; i < static_cast<int>(sizeof(columns) / sizeof(columns[0])); ++i) {
         LVCOLUMNW column{};
@@ -321,12 +327,13 @@ void MainWindow::create_children() {
     }
 
     add_text(kPlanHeading, L"今日计划", SS_LEFT, heading_font_);
-    plan_text_ = add_text(kPlanText,
-                          L"尚未生成。\n\n"
-                          L"M2 编排算法接入后，\n"
-                          L"这里将显示时间块、\n"
-                          L"未排上的任务与冲突告警。",
-                          SS_LEFT, font_);
+    plan_text_ = CreateWindowExW(
+        WS_EX_CLIENTEDGE, L"EDIT", L"",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL |
+            WS_VSCROLL,
+        0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kPlanText)),
+        instance_, nullptr);
+    SendMessageW(plan_text_, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
 
     add_text(kStatsHeading, L"统计", SS_LEFT, heading_font_);
     stats_text_ = add_text(kStatsText, L"", SS_LEFT, font_);
@@ -382,15 +389,16 @@ void MainWindow::layout() {
 
     // 列表
     MoveWindow(list_, pad, content_top, list_width, content_height, TRUE);
-    const int fixed_width = s(56 + 110 + 70 + 80 + 140 + 80);
-    ListView_SetColumnWidth(list_, 1, std::max(s(180), list_width - fixed_width - s(24)));
+    const int fixed_width = s(56 + 76 + 90 + 70 + 80 + 130 + 80);
+    ListView_SetColumnWidth(list_, 1, std::max(s(160), list_width - fixed_width - s(24)));
 
-    // 右侧面板
+    // 右侧面板：计划区可滚动，统计区放在它下面。
     const int panel_x = pad + list_width + pad;
+    const int plan_height = s(250);
     MoveWindow(GetDlgItem(hwnd_, kPlanHeading), panel_x, content_top, panel_width, s(24), TRUE);
-    MoveWindow(plan_text_, panel_x, content_top + s(32), panel_width, s(150), TRUE);
+    MoveWindow(plan_text_, panel_x, content_top + s(32), panel_width, plan_height, TRUE);
 
-    const int stats_top = content_top + s(198);
+    const int stats_top = content_top + s(32) + plan_height + s(16);
     MoveWindow(GetDlgItem(hwnd_, kStatsHeading), panel_x, stats_top, panel_width, s(24), TRUE);
     MoveWindow(stats_text_, panel_x, stats_top + s(30), panel_width,
                std::max(s(80), content_bottom - stats_top - s(30)), TRUE);
@@ -414,6 +422,7 @@ void MainWindow::refresh() {
         InvalidateRect(list_, nullptr, TRUE);
         set_status(L"读取任务失败：" + to_wide(rows.status().message));
         update_stats();
+        update_plan();
         update_buttons();
         return;
     }
@@ -422,6 +431,7 @@ void MainWindow::refresh() {
     for (const TaskRow& row : rows.value()) {
         const std::wstring id_text = std::to_wstring(row.id);
         const std::wstring title = to_wide(row.title);
+        const std::wstring kind = to_wide(row.kind_label);
         const std::wstring course = to_wide(row.course);
         const std::wstring importance = std::to_wstring(row.importance);
         const std::wstring estimate = std::to_wstring(row.estimate);
@@ -436,11 +446,12 @@ void MainWindow::refresh() {
         ListView_InsertItem(list_, &item);
 
         ListView_SetItemText(list_, index, 1, const_cast<wchar_t*>(title.c_str()));
-        ListView_SetItemText(list_, index, 2, const_cast<wchar_t*>(course.c_str()));
-        ListView_SetItemText(list_, index, 3, const_cast<wchar_t*>(importance.c_str()));
-        ListView_SetItemText(list_, index, 4, const_cast<wchar_t*>(estimate.c_str()));
-        ListView_SetItemText(list_, index, 5, const_cast<wchar_t*>(deadline.c_str()));
-        ListView_SetItemText(list_, index, 6, const_cast<wchar_t*>(state.c_str()));
+        ListView_SetItemText(list_, index, 2, const_cast<wchar_t*>(kind.c_str()));
+        ListView_SetItemText(list_, index, 3, const_cast<wchar_t*>(course.c_str()));
+        ListView_SetItemText(list_, index, 4, const_cast<wchar_t*>(importance.c_str()));
+        ListView_SetItemText(list_, index, 5, const_cast<wchar_t*>(estimate.c_str()));
+        ListView_SetItemText(list_, index, 6, const_cast<wchar_t*>(deadline.c_str()));
+        ListView_SetItemText(list_, index, 7, const_cast<wchar_t*>(state.c_str()));
         ++index;
     }
 
@@ -449,6 +460,7 @@ void MainWindow::refresh() {
     set_status(L"共 " + std::to_wstring(rows.value().size()) + L" 条任务");
 
     update_stats();
+    update_plan();
     update_buttons();
 }
 
@@ -468,6 +480,39 @@ void MainWindow::update_stats() {
     text += L"超期　　　　" + std::to_wstring(value.overdue) + L"\n";
     text += L"预估总时长　" + std::to_wstring(value.open_estimate) + L" 分钟";
     SetWindowTextW(stats_text_, text.c_str());
+}
+
+void MainWindow::update_plan() {
+    auto view = model_.plan_today();
+    if (!view.has_value()) {
+        SetWindowTextW(plan_text_,
+                       (L"计划生成失败：" + to_wide(view.status().message)).c_str());
+        return;
+    }
+
+    const PlanView& plan = view.value();
+    std::wstring text;
+
+    if (plan.rows.empty()) {
+        text += L"（没有可安排的时间块）\r\n";
+    } else {
+        for (const PlanRow& row : plan.rows) {
+            text += to_wide(row.time_text) + L"  [" + to_wide(row.kind_label) + L"]\r\n    " +
+                    to_wide(row.title) + L"\r\n";
+        }
+    }
+
+    text += L"\r\n窗口 " + std::to_wstring(plan.total_free) + L" 分钟，已安排 " +
+            std::to_wstring(plan.total_assigned) + L" 分钟\r\n";
+
+    if (!plan.warnings.empty()) {
+        text += L"\r\n需要注意：\r\n";
+        for (const std::string& warning : plan.warnings) {
+            text += L"  " + to_wide(warning) + L"\r\n";
+        }
+    }
+
+    SetWindowTextW(plan_text_, text.c_str());
 }
 
 void MainWindow::update_buttons() {

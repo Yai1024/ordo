@@ -3,8 +3,8 @@
 > **本文件是工程的唯一指导文件。** 任何实现若与本文件不一致，必须先修订本文件并记入 ADR，
 > 再改代码。禁止"代码先行、文档追认"。
 >
-> - 文档版本：`0.1.0-draft`
-> - 生效日期：2026-10-24
+> - 文档版本：`0.2.0-draft`
+> - 生效日期：2026-10-25
 > - 适用仓库：`project_basic_cpp`（GitHub `Yai1024/ordo`，私有，main 分支）
 > - 对应课程：《高级语言程序设计》综合实验大作业 · **选题 01 学习任务安排系统**
 > - 维护人：Jerry
@@ -55,7 +55,7 @@
 | 作业原型 | 选题 01「学习任务安排系统」，主要方法：规则判断与优先级排序，难度档：入门 |
 | 命名空间 | `ordo` |
 | 可执行文件 | `ordo`（Windows 下为 `bin/ordo.exe`） |
-| 版本号方案 | 语义化版本 `MAJOR.MINOR.PATCH`，当前 `0.1.0` |
+| 版本号方案 | 语义化版本 `MAJOR.MINOR.PATCH`，当前 `0.2.0` |
 | 许可证 | MIT（见 `LICENSE`） |
 
 **为什么叫 Ordo**：本题的内核不是"存任务"，而是"给任务排序与安放"。
@@ -200,7 +200,8 @@ project_basic_cpp/
 │   ├── GUI-INTERFACE.md             [M1.5] 外部 GUI 接入契约（AppModel）
 │   ├── adr/
 │   │   ├── 0001-architecture.md     [M0]  架构决策记录第 1 号
-│   │   └── 0002-gui-layer.md        [M1.5] GUI 适配器与界面模型层
+│   │   ├── 0002-gui-layer.md        [M1.5] GUI 适配器与界面模型层
+│   │   └── 0003-planning.md         [M2]  任务类型、活动固定时间与编排语义
 │   └── report/                      [M4]  实验报告与演示脚本
 │       ├── report.md                [M4]  作业要求的实验报告
 │       └── demo.md                  [M4]  演示流程脚本（逐条命令）
@@ -218,6 +219,7 @@ project_basic_cpp/
 │   ├── io/                                持久化，只暴露接口
 │   │   ├── repository.h             [M1]  ITaskRepository 抽象基类
 │   │   ├── csv.h                    [M1]  CSV 行切分/转义/字段解析（纯函数）
+│   │   ├── config.h                 [M2]  config.ini 解析（作息与装箱策略）
 │   │   └── file_repository.h        [M1]  CsvTaskRepository 具体实现
 │   │
 │   ├── algo/                              纯函数算法，无 I/O
@@ -263,7 +265,9 @@ project_basic_cpp/
     ├── test_priority.cpp            [M1]  排序稳定性与并列规则
     ├── test_task_service.cpp        [M1]  假仓库驱动的业务规则
     ├── test_app_model.cpp           [M1.5] 表单解析与展示行映射
-    ├── test_packer.cpp              [M2]  恰好装满、超载、零时长
+    ├── test_packer.cpp              [M2]  恰好装满、超载、零时长、活动占位
+    ├── test_config.cpp              [M2]  INI 缺省、非法值、时间解析
+    ├── test_plan_service.cpp        [M2]  空闲时段与今日/本周编排
     └── test_sm2.cpp                 [M3]  间隔序列与边界
 ```
 
@@ -273,7 +277,7 @@ project_basic_cpp/
 | --- | --- | --- |
 | M0 | 3 | 只验证工具链 |
 | M1 | 约 14 | 基本要求闭环，够用即止 |
-| M2 | 约 8 | 编排是唯一新算法域 |
+| M2 | 约 10 | 编排是唯一新算法域；含配置读取与三个测试文件 |
 | M3 | 约 4 | 统计与复习是增量 |
 | M4 | 0 | 只写数据与文档 |
 
@@ -297,6 +301,9 @@ using TimePoint = Clock::time_point;
 // ---- core/task.h ----
 enum class TaskState { Todo, Doing, Done, Dropped };
 
+// 任务类型决定打分系数与装箱方式（ADR-0003）。
+enum class TaskKind { CourseWork, SelfStudy, Activity, Review, Other };
+
 struct Task {
     TaskId      id{};                        // 唯一，> 0
     std::string title;                       // 非空
@@ -307,6 +314,8 @@ struct Task {
     TaskState   state{TaskState::Todo};
     int         review_stage{0};             // SM-2 阶段，0 表示未进入复习
     std::optional<TimePoint> last_review;    // 上次复习时刻
+    TaskKind    kind{TaskKind::Other};       // 业务类型；旧数据默认 other
+    std::optional<TimePoint> fixed_start;    // 仅 Activity：固定开始时刻
 
     // 不变量校验：失败返回 ErrorCode，不做部分修复
     Status validate() const;
@@ -438,6 +447,8 @@ struct PackPolicy {
 };
 struct PackResult { std::vector<Block> blocks; std::vector<Warning> warnings; };
 
+// tasks 必须已按优先级排好序（rank_by_score / rank_by_edf 的输出）。
+// Activity 按 fixed_start 整块占位，不参与顺序装箱（ADR-0003）。
 PackResult pack(const std::vector<Task>&, const std::vector<FreeSlot>&,
                 const PackPolicy&, TimePoint now);
 
@@ -474,9 +485,9 @@ private:
 // ---- app/plan_service.h ----
 class PlanService {
 public:
-    PlanService(ITaskRepository&, const Config&);
-    Result<Plan> plan_today(TimePoint now) const;
-    Result<Plan> plan_week(TimePoint now) const;
+    PlanService(ITaskRepository&, ScheduleConfig);
+    Result<Plan> plan_today(TimePoint now, RankMode = RankMode::Score) const;
+    Result<Plan> plan_week(TimePoint now, RankMode = RankMode::Score) const;
     // 内部流程：取任务 → 算空闲时段 → 排序 → 装箱 → 冲突检测
 };
 ```
@@ -585,8 +596,12 @@ Dispatcher ──C1──▶ PlanCommand::execute
 | 6 | `deadline` | datetime | `YYYY-MM-DD HH:MM` | `2026-10-30 23:59` |
 | 7 | `state` | enum | `todo` / `doing` / `done` / `dropped` | `todo` |
 | 8 | `review_stage` | int | ≥ 0 | `0` |
+| 9 | `kind` | enum | `coursework` / `selfstudy` / `activity` / `review` / `other` | `other` |
+| 10 | `fixed_start` | datetime | 仅 `activity` 必填，其余留空 | `2026-10-28 19:00` |
 
 首行为表头。字段顺序固定，新增字段**只能追加到行尾**（保证旧文件可读）。
+读取时同时接受旧 8 列表头（`kind` 默认 `other`、`fixed_start` 为空）与新 10 列表头；
+保存时统一写新表头。
 
 ### 9.2 `data/config.ini`
 
@@ -631,12 +646,15 @@ min_block        = 15
 | **M0 骨架** | 仓库可编译、可测试、可运行 | `mingw32-make && mingw32-make test` 全绿；`ordo --version` 输出正确 | 工程组织 |
 | **M1 基本要求** | 任务 CRUD + 持久化 + 两种排序 + 菜单 | 录入 20 条、重启进程数据仍在；非法输入有明确提示；`task.list --rank score` 排序正确 | 录入/查询/修改/统计、文件保存、异常处理、优先级排序 |
 | **M1.5 图形界面** | Win32 基础 GUI + GUI 无关的 `ui::AppModel` | `bin/ordo-gui.exe` 可完成增删改查、完成、筛选、排序、统计；不显示假计划数据；`mingw32-make test` 全绿 | 图形化交互（用户新增要求，ADR-0002） |
-| **M2 编排** | 空闲时段 → 装箱 → 冲突告警 | `plan today` 输出时间表；超载时给出每条未排任务的 `Warning` | 规则判断、时间安排 |
+| **M2 编排** | 任务类型 → 空闲时段 → 装箱 → 冲突告警 | `plan today` 输出时间表；超载时给出每条未排任务的 `Warning`；GUI 计划区显示真实时间块；活动按固定开始时间整块占位 | 规则判断、时间安排 |
 | **M3 长期能力** | 日志、统计、SM-2 复习 | `stats.week` 输出完成率与投入分布；复习任务按间隔出现在列表 | 统计、拓展 |
 | **M4 交付** | 测试数据、报告、演示 | `docs/report/report.md` 含至少 1 个失败案例分析与已知问题 | 测试数据、实验报告、演示 |
 
 **里程碑纪律**：一个里程碑未验收，不开启下一个。M2 之前不写任何 SM-2 代码。
 M1.5 先于 M2（ADR-0002）：编排算法的接口要围绕 `ui::AppModel` 的计划视图设计。
+
+**当前进度（2026-10-25）**：M0、M1、M1.5、M2 已完成，`mingw32-make test` 共 86 个用例；
+下一步 M3（日志、统计、SM-2）。
 
 ---
 
@@ -676,6 +694,7 @@ M1.5 先于 M2（ADR-0002）：编排算法的接口要围绕 `ui::AppModel` 的
 | `docs/GUI-INTERFACE.md` | 外部 GUI 接入契约：`ui::AppModel` 的职责与调用方式 |
 | `docs/adr/0001-architecture.md` | 四层架构、构建系统、错误模型的决策记录 |
 | `docs/adr/0002-gui-layer.md` | GUI 适配器、界面模型层与 M1.5 的决策记录 |
+| `docs/adr/0003-planning.md` | 任务类型、活动固定时间、打分系数与 M2 编排语义 |
 | `docs/report/report.md` | 课程实验报告（M4） |
 | `docs/report/demo.md` | 演示脚本（M4） |
 | `CHANGELOG.md` | 版本变更 |

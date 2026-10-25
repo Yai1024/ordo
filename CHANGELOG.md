@@ -37,7 +37,25 @@
   - 文档：新增 `docs/adr/0002-gui-layer.md`、`docs/GUI-INTERFACE.md`
   - 测试：49 个用例（新增 AppModel 的 8 个表单与展示映射用例）
 
+- 2026-10-25 · **M2 编排**
+  - `core/`：`TaskKind`（课程作业 / 自主学习 / 活动 / 复习考试 / 其他）与
+    `fixed_start`；`FreeSlot` / `Block` 区间运算；`Plan` / `Warning`
+  - `io/config.h`：零依赖 INI 解析，缺省值、非法值行号、BOM/CRLF 容忍
+  - `io/file_repository`：兼容旧 8 列与新 10 列 CSV，保存时自动迁移
+  - `algo/packer`：按优先级贪心装箱，支持拆分、`gap`、`min_block`、
+    活动固定占位、超期告警
+  - `algo/conflict`：时间块重叠检测，对冲突双方各给一条告警
+  - `algo/priority`：类型系数（作业 1.15 / 复习 1.10 / 自学 0.90）
+  - `app/plan_service`：今日（填满空闲时间）与本周（滚动 7 天、按截止过滤）编排
+  - `cli`：`plan today` / `plan week`，菜单新增今日/本周计划；
+    `task add/edit` 支持 `--kind` / `--start`
+  - `ui/AppModel`：`plan_today()` / `plan_week()` 返回 `PlanView`；
+    `TaskRow` / `TaskForm` 增加类型与开始时间
+  - `gui`：列表新增类型列；右侧计划区改为可滚动只读文本框；
+    对话框新增类型下拉，活动时"截止时间"切换为"开始时间"
+  - 文档：`docs/adr/0003-planning.md`、OUTLINE / DATA-FORMAT / GUI-INTERFACE 同步
+  - 测试：86 个用例（新增 packer / config / plan_service 与类型相关用例）
+
 ### Planned
-- M2 编排：空闲时段推导、时间块装箱、冲突告警（界面围绕 `ui::AppModel` 的计划视图设计）
 - M3 长期能力：执行日志、周统计、SM-2 间隔复习
 - M4 交付：测试数据集、实验报告、演示脚本

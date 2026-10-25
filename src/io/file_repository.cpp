@@ -17,9 +17,12 @@
 namespace ordo {
 namespace {
 
-constexpr std::string_view kHeader =
+constexpr std::string_view kHeaderV1 =
     "id,title,course,importance,estimate,deadline,state,review_stage";
-constexpr std::size_t kColumnCount = 8;
+constexpr std::string_view kHeaderV2 =
+    "id,title,course,importance,estimate,deadline,state,review_stage,kind,fixed_start";
+constexpr std::size_t kColumnCountV1 = 8;
+constexpr std::size_t kColumnCountV2 = 10;
 
 bool parse_u64(std::string_view text, std::uint64_t& out) {
     if (text.empty()) {
@@ -68,6 +71,8 @@ Result<std::vector<Task>> CsvTaskRepository::load_all() const {
     std::string line;
     std::size_t line_number = 0;
     bool header_seen = false;
+    bool has_kind_columns = false;
+    std::size_t expected_columns = 0;
 
     while (std::getline(input, line)) {
         ++line_number;
@@ -85,10 +90,18 @@ Result<std::vector<Task>> CsvTaskRepository::load_all() const {
         }
 
         if (!header_seen) {
-            if (view != kHeader) {
+            // 同时接受旧 8 列与新 10 列表头，旧文件在读取时就地兼容（ADR-0003）。
+            if (view == kHeaderV2) {
+                has_kind_columns = true;
+                expected_columns = kColumnCountV2;
+            } else if (view == kHeaderV1) {
+                has_kind_columns = false;
+                expected_columns = kColumnCountV1;
+            } else {
                 return fail_tasks(ErrorCode::Corrupted,
                                   line_prefix(line_number) + "表头不匹配，应为: " +
-                                      std::string{kHeader});
+                                      std::string{kHeaderV2} + "（或旧版 " +
+                                      std::string{kHeaderV1} + "）");
             }
             header_seen = true;
             continue;
@@ -101,11 +114,11 @@ Result<std::vector<Task>> CsvTaskRepository::load_all() const {
         }
 
         std::vector<std::string> fields = std::move(parsed.value());
-        if (fields.size() != kColumnCount) {
+        if (fields.size() != expected_columns) {
             return fail_tasks(ErrorCode::Corrupted,
                               line_prefix(line_number) + "字段数为 " +
                                   std::to_string(fields.size()) + "，应为 " +
-                                  std::to_string(kColumnCount));
+                                  std::to_string(expected_columns));
         }
         for (std::string& field : fields) {
             field = std::string{trim(field)};
@@ -154,6 +167,32 @@ Result<std::vector<Task>> CsvTaskRepository::load_all() const {
         task.state = *state;
         task.review_stage = review_stage;
 
+        if (has_kind_columns) {
+            // 旧数据迁移时 kind 可能为空，按 other 处理（ADR-0003）。
+            if (fields[8].empty()) {
+                task.kind = TaskKind::Other;
+            } else {
+                const std::optional<TaskKind> kind = parse_task_kind(fields[8]);
+                if (!kind.has_value()) {
+                    return fail_tasks(ErrorCode::InvalidFormat,
+                                      line_prefix(line_number) +
+                                          "kind 只能是 coursework/selfstudy/activity/review/other: " +
+                                          fields[8]);
+                }
+                task.kind = *kind;
+            }
+
+            if (!fields[9].empty()) {
+                const std::optional<TimePoint> fixed_start = parse_datetime(fields[9]);
+                if (!fixed_start.has_value()) {
+                    return fail_tasks(ErrorCode::InvalidFormat,
+                                      line_prefix(line_number) +
+                                          "fixed_start 格式应为 YYYY-MM-DD HH:MM: " + fields[9]);
+                }
+                task.fixed_start = *fixed_start;
+            }
+        }
+
         const Status check = task.validate();
         if (!check.ok()) {
             return fail_tasks(check.code, line_prefix(line_number) + check.message);
@@ -201,7 +240,8 @@ Status CsvTaskRepository::save_all(const std::vector<Task>& tasks) {
         return Status::fail(ErrorCode::IoError, "无法写入临时文件: " + temp_path.string());
     }
 
-    output << kHeader << '\n';
+    // 统一写新表头：旧文件在第一次保存时自动迁移（ADR-0003）。
+    output << kHeaderV2 << '\n';
     for (const Task& task : tasks) {
         const std::vector<std::string> fields{
             std::to_string(task.id),
@@ -212,6 +252,8 @@ Status CsvTaskRepository::save_all(const std::vector<Task>& tasks) {
             format_datetime(task.deadline),
             std::string{to_string(task.state)},
             std::to_string(task.review_stage),
+            std::string{to_string(task.kind)},
+            task.fixed_start.has_value() ? format_datetime(*task.fixed_start) : std::string{},
         };
         output << csv::join_fields(fields) << '\n';
     }

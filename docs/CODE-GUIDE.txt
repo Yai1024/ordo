@@ -3,8 +3,8 @@
 ================================================================================
 
 文件：      docs/CODE-GUIDE.txt
-版本：      0.3.0（M1.5 图形界面；M1/M1.5 新增文件见第八、九部分）
-日期：      2026-10-24
+版本：      0.4.0（M2 编排；M1/M1.5 见第八、九部分，M2 见第十部分）
+日期：      2026-10-25
 编码：      UTF-8（Windows 记事本请选"UTF-8"打开，否则中文会乱码）
 
 这份文件回答一个问题：库里每个文件是干什么的，每一行代码在干什么。
@@ -50,12 +50,13 @@ Ordo 要做的是：
 1.3  现在做到哪一步
 --------------------------------------------------------------------------------
 
-这个项目按里程碑推进，目前完成 M0、M1 与 M1.5：
+这个项目按里程碑推进，目前完成 M0、M1、M1.5 与 M2：
 
   已完成  ██████  M0 骨架：仓库结构、构建脚本、测试框架、工程文档
   已完成  ██████  M1 基本要求：任务增删改查、CSV 持久化、加权排序 / EDF、文本菜单
   已完成  ██████  M1.5 图形界面：Win32 界面 + GUI 无关的 ui::AppModel
-  未开始  ░░░░░░  M2 时间编排 / M3 统计与复习 / M4 交付材料
+  已完成  ██████  M2 时间编排：任务类型、空闲时段、装箱、冲突告警、今日/本周计划
+  未开始  ░░░░░░  M3 统计与复习 / M4 交付材料
 
 现在有两种外壳共用同一套业务：
   bin/ordo-gui.exe   图形界面（双击或命令行启动）
@@ -75,7 +76,7 @@ M2 到 M4 分别要做什么，见 docs/OUTLINE.md 第 10 节。
   成功标志: 屏幕上出现 "==> built: bin/ordo"
 
   命令 2:  ./bin/ordo --version
-  会发生:  运行程序，打印 "ordo 0.1.0"
+  会发生:  运行程序，打印 "ordo 0.2.0"
   说明:    --version 是命令行参数，程序识别到它就直接打印版本然后退出
 
   命令 3:  ./bin/ordo-gui
@@ -222,7 +223,7 @@ M2 之后还会创建：
 
 【它是什么】
   版本号的唯一出处。程序里任何地方要用版本号，都包含这个文件，
-  而不是到处手写 "0.1.0"。将来改版本只改这一处。
+  而不是到处手写 "0.2.0"。将来改版本只改这一处。
 
 【逐行说明】
 
@@ -243,11 +244,11 @@ M2 之后还会创建：
 第 6 行   #define ORDO_VERSION_PATCH 0
           修订号，修 bug 时 +1。
 
-第 8 行   #define ORDO_VERSION_STRING "0.1.0"
+第 8 行   #define ORDO_VERSION_STRING "0.2.0"
           给人看的完整版本字符串。注意值是带双引号的，它是一个字符串字面量。
           有了它，代码里可以写：
               std::cout << "ordo " ORDO_VERSION_STRING;
-          两个字符串字面量挨在一起，C++ 会自动拼接成 "ordo 0.1.0"。
+          两个字符串字面量挨在一起，C++ 会自动拼接成 "ordo 0.2.0"。
 
 【一个坑】
   三个数字宏和这个字符串宏是分开维护的，改版本时必须一起改，否则会对不上。
@@ -507,7 +508,7 @@ M2 之后还会创建：
             断言：版本字符串不能是空的。
 
 第 10 行    ORDO_CHECK_EQ(version.find('.'), std::size_t{1});
-            断言：第一个点的位置必须是下标 1，也就是 "0.1.0" 里 0 和 1 之间那个点。
+            断言：第一个点的位置必须是下标 1，也就是 "0.2.0" 里 0 和 1 之间那个点。
             这条检查能抓到"版本号写成 010"这类低级错误。
             std::size_t{1} 显式写出类型，避免和 int 比较时的类型转换警告。
 
@@ -794,7 +795,7 @@ bin/
   1. 操作系统加载 bin/ordo.exe
   2. 进入 main()，argc = 2，argv[0] = 程序路径，argv[1] = "--version"
   3. 循环从 i = 1 开始，arg = "--version"
-  4. 命中第 27 行的判断，打印 "ordo 0.1.0"
+  4. 命中第 27 行的判断，打印 "ordo 0.2.0"
   5. return 0，操作系统收到退出码 0
 
 【场景 C：测试】
@@ -1167,7 +1168,7 @@ tests/test_task_service.cpp    假仓库驱动的 id 分配、拒绝路径、过
   mingw32-make           同时产出 bin/ordo.exe 与 bin/ordo-gui.exe
   mingw32-make gui       只构建 GUI
   mingw32-make run-gui   构建并启动 GUI
-  mingw32-make test      49 个用例
+  mingw32-make test      49 个用例（M1.5 阶段；M2 后为 86）
 
   已实测的交互：新增（中文标题、日期选择）、回车保存、选中行、
   标记完成、按状态筛选、编辑对话框预填。
@@ -1177,6 +1178,254 @@ tests/test_task_service.cpp    假仓库驱动的 id 分配、拒绝路径、过
   读 docs/GUI-INTERFACE.md。要点只有一句：
   新外壳构造 ITaskRepository 与 ui::AppModel，所有动作调用 AppModel，
   不改 ui/、app/、algo/、io/ 中任何一行。
+
+================================================================================
+第十部分  M2 编排：新增了什么、怎么读
+================================================================================
+
+--------------------------------------------------------------------------------
+10.1  一句话
+--------------------------------------------------------------------------------
+
+M1 只会"排顺序"，M2 开始"排时间"：把未完成任务塞进每天的作息窗口，
+排不下的写进 warnings，并把"活动"这种不能挪的任务当作固定占位。
+
+M2 还引入了一个模型级改动：任务有类型（课程作业 / 自主学习 / 活动 /
+复习考试 / 其他），类型同时影响打分与装箱方式。设计依据是
+docs/adr/0003-planning.md。
+
+--------------------------------------------------------------------------------
+10.2  任务类型与数据格式
+--------------------------------------------------------------------------------
+
+include/ordo/core/task.h
+
+  enum class TaskKind { CourseWork, SelfStudy, Activity, Review, Other };
+
+  Task 新增两个字段：
+    TaskKind kind{TaskKind::Other};        // 业务类型
+    std::optional<TimePoint> fixed_start;  // 仅 Activity
+
+不变量（src/core/task.cpp 的 Task::validate）：
+
+  - Activity 必须 fixed_start；estimate > 0；deadline >= fixed_start + estimate；
+  - 非 Activity 的 fixed_start 必须为空。
+
+CSV 变化（data/tasks.csv）：
+
+  旧：id,title,course,importance,estimate,deadline,state,review_stage
+  新：... ,kind,fixed_start
+
+  读取时两种表头都接受；旧表头按 kind=other、fixed_start 空处理。
+  保存时统一写新表头，所以旧文件在第一次写入时自动迁移。
+  这条兼容逻辑在 src/io/file_repository.cpp 的 load_all / save_all。
+
+--------------------------------------------------------------------------------
+10.3  core/slot.h + core/schedule.h
+--------------------------------------------------------------------------------
+
+include/ordo/core/slot.h
+
+  FreeSlot { begin, end }   一段可用时间
+  Block    { task, begin, end }  一个已排入的时间块
+
+  两者都是半开区间 [begin, end)：19:00 结束的块和 19:00 开始的块不重叠。
+
+  关键函数：
+    overlaps(a_begin, a_end, b_begin, b_end)
+    intersect(left, right)
+    subtract(slots, occupied)   从可用时段里扣掉一个占用区间
+
+  为什么单独做 subtract：活动占位、休息间隔、冲突检测都要"从一段区间里
+  挖掉另一段"，写成纯函数后可以在没有任务、没有文件的情况下测试。
+
+include/ordo/core/schedule.h
+
+  Warning { task, reason }   一条解释性告警
+  Plan    { blocks, warnings, total_assigned, total_free }
+
+  add_warning / sum_minutes / sort_blocks 都是小工具。
+  Plan 里必须有 warnings：排不上不是错误，是正常业务结果。
+
+--------------------------------------------------------------------------------
+10.4  io/config.h：读 config.ini
+--------------------------------------------------------------------------------
+
+include/ordo/io/config.h
+
+  struct ScheduleConfig {
+      Minutes weekday_start{18*60+30};
+      Minutes weekday_end{23*60};
+      Minutes weekend_start{9*60};
+      Minutes weekend_end{22*60};
+      Minutes break_minutes{10};
+      Minutes default_estimate{60};
+      bool    allow_split{true};
+      Minutes min_block{15};
+  };
+
+  Result<ScheduleConfig> load_config(path);
+
+规则：
+  - 文件不存在 → 返回默认值（和 tasks.csv 的首次运行语义一致）；
+  - 已知键值非法 → 返回 InvalidFormat，消息带行号；
+  - 未知键忽略，便于以后追加配置；
+  - 时间写成 HH:MM，解析成"零点起的分钟数"；
+  - 读的时候容忍 UTF-8 BOM 与 CRLF。
+
+main.cpp 与 main_gui.cpp 是装配点：它们读配置，再注入 AppContext / AppModel。
+algo/ 与 ui/ 不碰文件。
+
+--------------------------------------------------------------------------------
+10.5  algo/packer.h + algo/conflict.h
+--------------------------------------------------------------------------------
+
+pack 的输入：
+  tasks   已经按优先级排好序（score 或 EDF 的输出）
+  slots   空闲时段
+  policy  allow_split / min_block / gap
+  now     当前时刻（由调用方传入，算法不取时钟）
+
+pack 的两轮：
+
+  第一轮：活动
+    - 按 fixed_start 生成 [start, start+estimate)；
+    - 已经结束的活动 → warning，跳过；
+    - 已经开始但没结束 → 从 now 占位，warning 提醒；
+    - 从空闲时段里 subtract 掉，保证别的任务不会排进来。
+
+  第二轮：普通任务
+    - 一个任务从最早的空闲时段开始填；
+    - 能一次装下就整块安排（短任务不受 min_block 限制）；
+    - 装不下且允许拆分 → 拿走整段可用时间，块后加 gap；
+    - 不允许拆分 → 只接受能一次装下的连续时段；
+    - 块结束不得晚于 deadline；
+    - 已超期任务忽略截止约束、排最早时段，并给"已超期"告警；
+    - 最后还有剩余 → warning 说明差多少分钟。
+
+detect_conflicts：
+  把块按开始时间排序，做扫描；两个块重叠时给双方各一条警告。
+  半开区间下，19:00 结束与 19:00 开始不算重叠。
+
+--------------------------------------------------------------------------------
+10.6  app/plan_service.h
+--------------------------------------------------------------------------------
+
+PlanService(repo, config)
+
+  plan_today(now, rank)  → 1 天窗口，所有未完成任务参与，填满今天的空闲时间
+  plan_week(now, rank)   → 滚动 7 天，只排截止落在窗口内的任务（含已超期）
+
+内部流程：
+
+  1. repo.load_all()
+  2. 过滤：只留 todo/doing；活动按 fixed_start 是否落在窗口内过滤；
+     本周计划再按 deadline <= 窗口结束过滤；
+  3. 排序：rank_by_score 或 rank_by_edf；
+  4. build_free_slots：按工作日/周末作息逐日生成，今天从 max(now, 开始) 算；
+  5. pack + detect_conflicts；
+  6. 汇总 total_free / total_assigned。
+
+注意窗口语义：
+  今日计划回答"今天还能做什么"，所以不按截止过滤；
+  本周计划回答"本周要交的活怎么排"，所以只排本周到期的任务，
+  避免把下个月的作业排进来。
+
+--------------------------------------------------------------------------------
+10.7  CLI：plan 命令与 task 参数
+--------------------------------------------------------------------------------
+
+src/cli/commands/plan_cmd.cpp
+
+  plan today [--rank score|edf]
+  plan week  [--rank score|edf]
+
+输出：
+  - 今日只显示 HH:MM-HH:MM；
+  - 本周每行前面带日期，避免 7 天里时间重复造成歧义；
+  - 末尾显示窗口总时长、已安排时长；
+  - warnings 逐条列出任务编号、标题与原因。
+
+src/cli/commands/task_cmd.cpp
+
+  task add 新增 --kind 与 --start；
+  task edit 新增 --kind 与 --start；
+  - 活动类必须 --start；没给 --due 时自动 deadline = start + estimate；
+  - 非活动类不允许 --start；改回非活动类会清空 fixed_start；
+  - 编辑活动类且没显式给 --due 时，若 deadline 早于 start+estimate 会自动顺延。
+
+菜单新增 7（今日计划）与 8（本周计划）。
+
+--------------------------------------------------------------------------------
+10.8  ui/AppModel 与 GUI
+--------------------------------------------------------------------------------
+
+include/ordo/ui/app_model.h
+
+  TaskRow 新增 kind_label（中文类型名）
+  TaskForm 新增 kind 与 start
+  PlanRow  { time_text, title, kind_label }
+  PlanView { rows, warnings, total_free, total_assigned }
+
+  plan_today(rank) / plan_week(rank)：
+    调 PlanService，再用 TaskService 取标题，把 Block 映射成已格式化的
+    PlanRow。外壳不需要知道 TaskId 到标题的映射，也不需要自己拼时间字符串。
+
+GUI（src/gui/）：
+
+  main_window.cpp
+    - 列表新增"类型"列；
+    - 右侧"今日计划"从 STATIC 改成只读多行 EDIT，可滚动；
+    - refresh() 同时刷新列表、统计与计划；
+    - 计划区显示时间块、告警、窗口/已安排分钟数。
+
+  task_dialog.cpp
+    - 新增"类型"下拉；
+    - 选择"活动"时，同一日期控件的标签从"截止时间"切换为"开始时间"，
+      保存时把它写入 TaskForm.start，deadline 留空交给 AppModel 补全；
+    - 选回其它类型时写 TaskForm.deadline，清空 start。
+
+  main_gui.cpp
+    - 从数据文件同目录读 config.ini，注入 MainWindow。
+
+--------------------------------------------------------------------------------
+10.9  一条 plan today 的完整调用链
+--------------------------------------------------------------------------------
+
+  ordo plan today
+    → Dispatcher 解析出 plan.today
+    → PlanTodayCommand::execute
+    → PlanService::plan_today(now, Score)
+        → repo.load_all()
+        → rank_by_score
+        → build_free_slots
+        → pack
+        → detect_conflicts
+    → TaskService::list 取标题
+    → print_plan
+    → 退出码 0
+
+和 M1 的 task 命令相比，多出的只是"算空闲时段 + 装箱 + 冲突"这一步，
+分层与错误模型没有变化。
+
+--------------------------------------------------------------------------------
+10.10  测试与验证
+--------------------------------------------------------------------------------
+
+  mingw32-make test      86 个用例
+  mingw32-make           编译 CLI 与 GUI
+
+新增测试：
+  tests/test_packer.cpp        恰好装满、超载、零时长、截止约束、活动占位、
+                               不允许拆分、gap、min_block、超期、冲突、区间扣除
+  tests/test_config.cpp        缺省值、完整配置、非法时间、反向窗口、非法布尔、BOM/CRLF
+  tests/test_plan_service.cpp  今日窗口、窗口结束、本周截止过滤、活动占位、
+                               作业优先于自学、超期、空任务
+
+已实测的交互：
+  - GUI 列表显示类型；
+  - 今日计划显示活动固定时段、课程作业拆分与未排告警；
+  - 添加对话框选择"活动"后标签变为"开始时间"。
 
 ================================================================================
                                   文件结束

@@ -8,6 +8,7 @@
 #include <ostream>
 
 #include "ordo/core/types.h"
+#include "ordo/io/config.h"
 #include "ordo/io/repository.h"
 
 namespace ordo {
@@ -17,6 +18,7 @@ struct AppContext {
     std::ostream& out;
     std::istream& in;
     std::function<TimePoint()> clock;
+    ScheduleConfig schedule;
 
     TimePoint now() const { return clock ? clock() : Clock::now(); }
 };

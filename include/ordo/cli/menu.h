@@ -20,6 +20,7 @@ private:
     bool handle_edit(AppContext& ctx);
     bool handle_remove(AppContext& ctx);
     bool handle_stats(AppContext& ctx);
+    bool handle_plan(AppContext& ctx, bool week);
 
     Dispatcher& dispatcher_;
 };

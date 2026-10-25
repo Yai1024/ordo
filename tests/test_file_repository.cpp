@@ -34,6 +34,8 @@ ordo::Task make_task(ordo::TaskId id, const std::string& title) {
 }
 
 const std::string kHeader = "id,title,course,importance,estimate,deadline,state,review_stage\n";
+const std::string kHeaderV2 =
+    "id,title,course,importance,estimate,deadline,state,review_stage,kind,fixed_start\n";
 
 }  // namespace
 
@@ -129,6 +131,68 @@ ORDO_TEST(repository_rejects_duplicate_id) {
     const auto loaded = repo.load_all();
     ORDO_CHECK(!loaded.has_value());
     ORDO_CHECK(loaded.status().code == ordo::ErrorCode::Duplicate);
+
+    std::filesystem::remove(path);
+}
+
+ORDO_TEST(repository_reads_old_header_as_other_kind) {
+    const std::filesystem::path path = temp_file("ordo_repo_old_header.csv");
+    write_text(path, kHeader + "1,旧数据,,3,10,2026-10-30 23:59,todo,0\n");
+
+    const ordo::CsvTaskRepository repo(path);
+    const auto loaded = repo.load_all();
+    ORDO_CHECK(loaded.has_value());
+    ORDO_CHECK_EQ(loaded.value().size(), std::size_t{1});
+    ORDO_CHECK(loaded.value()[0].kind == ordo::TaskKind::Other);
+    ORDO_CHECK(!loaded.value()[0].fixed_start.has_value());
+
+    std::filesystem::remove(path);
+}
+
+ORDO_TEST(repository_round_trips_activity) {
+    const std::filesystem::path path = temp_file("ordo_repo_activity.csv");
+    std::filesystem::remove(path);
+
+    ordo::Task activity = make_task(1, "社团例会");
+    activity.kind = ordo::TaskKind::Activity;
+    activity.estimate = 60;
+    activity.fixed_start = ordo::add_minutes(kNow, 1940);
+    activity.deadline = ordo::add_minutes(kNow, 2000);
+
+    ordo::CsvTaskRepository repo(path);
+    ORDO_CHECK(repo.save_all({activity}).ok());
+
+    const auto loaded = repo.load_all();
+    ORDO_CHECK(loaded.has_value());
+    ORDO_CHECK_EQ(loaded.value().size(), std::size_t{1});
+    ORDO_CHECK(loaded.value()[0].kind == ordo::TaskKind::Activity);
+    ORDO_CHECK(loaded.value()[0].fixed_start.has_value());
+    ORDO_CHECK_EQ(ordo::format_datetime(*loaded.value()[0].fixed_start),
+                  ordo::format_datetime(*activity.fixed_start));
+
+    std::filesystem::remove(path);
+}
+
+ORDO_TEST(repository_rejects_activity_without_fixed_start) {
+    const std::filesystem::path path = temp_file("ordo_repo_activity_bad.csv");
+    write_text(path, kHeaderV2 + "1,活动,,3,60,2026-10-30 20:00,todo,0,activity,\n");
+
+    const ordo::CsvTaskRepository repo(path);
+    const auto loaded = repo.load_all();
+    ORDO_CHECK(!loaded.has_value());
+    ORDO_CHECK(loaded.status().code == ordo::ErrorCode::InvalidValue);
+
+    std::filesystem::remove(path);
+}
+
+ORDO_TEST(repository_rejects_unknown_kind) {
+    const std::filesystem::path path = temp_file("ordo_repo_bad_kind.csv");
+    write_text(path, kHeaderV2 + "1,任务,,3,60,2026-10-30 20:00,todo,0,lunch,\n");
+
+    const ordo::CsvTaskRepository repo(path);
+    const auto loaded = repo.load_all();
+    ORDO_CHECK(!loaded.has_value());
+    ORDO_CHECK(loaded.status().code == ordo::ErrorCode::InvalidFormat);
 
     std::filesystem::remove(path);
 }

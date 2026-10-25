@@ -74,6 +74,21 @@ ORDO_TEST(score_ties_are_deterministic_by_id) {
     ORDO_CHECK_EQ(ranked[2], ordo::TaskId{3});
 }
 
+ORDO_TEST(score_prefers_coursework_over_selfstudy_on_ties) {
+    ordo::Task coursework = make_task(1, 3, 60, 1000);
+    coursework.kind = ordo::TaskKind::CourseWork;
+    ordo::Task selfstudy = make_task(2, 3, 60, 1000);
+    selfstudy.kind = ordo::TaskKind::SelfStudy;
+
+    const std::vector<ordo::Task> tasks{coursework, selfstudy};
+    const ordo::ScoreContext context{kNow, ordo::kDefaultDailyCapacity};
+    const std::vector<ordo::TaskId> ranked =
+        ordo::rank_by_score(tasks, ordo::score_weighted, context);
+
+    ORDO_CHECK_EQ(ranked[0], ordo::TaskId{1});
+    ORDO_CHECK_EQ(ranked[1], ordo::TaskId{2});
+}
+
 ORDO_TEST(score_handles_empty_list_and_zero_capacity) {
     const ordo::ScoreContext context{kNow, 0};
     ORDO_CHECK(ordo::rank_by_score({}, ordo::score_weighted, context).empty());

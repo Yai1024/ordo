@@ -70,6 +70,16 @@ ordo::TaskForm make_form(const std::string& title = "高数作业") {
     return form;
 }
 
+ordo::TaskForm make_activity_form(const std::string& title = "社团例会") {
+    ordo::TaskForm form;
+    form.title = title;
+    form.kind = "activity";
+    form.importance = "4";
+    form.estimate = "60";
+    form.start = "2026-12-01 19:00";
+    return form;
+}
+
 }  // namespace
 
 ORDO_TEST(app_model_create_parses_form) {
@@ -134,6 +144,48 @@ ORDO_TEST(app_model_form_for_round_trips) {
     ORDO_CHECK_EQ(form.value().deadline, std::string{"2026-12-01 20:00"});
     ORDO_CHECK(form.value().state.has_value());
     ORDO_CHECK(*form.value().state == ordo::TaskState::Todo);
+}
+
+ORDO_TEST(app_model_create_activity_uses_start_and_computes_deadline) {
+    FakeRepo repo;
+    ordo::AppModel model = make_model(repo);
+
+    const auto created = model.create(make_activity_form());
+    ORDO_CHECK(created.has_value());
+    ORDO_CHECK_EQ(repo.tasks.size(), std::size_t{1});
+    ORDO_CHECK(repo.tasks[0].kind == ordo::TaskKind::Activity);
+    ORDO_CHECK(repo.tasks[0].fixed_start.has_value());
+    ORDO_CHECK_EQ(ordo::format_datetime(*repo.tasks[0].fixed_start),
+                  std::string{"2026-12-01 19:00"});
+    ORDO_CHECK_EQ(ordo::format_datetime(repo.tasks[0].deadline),
+                  std::string{"2026-12-01 20:00"});
+}
+
+ORDO_TEST(app_model_rejects_activity_without_start) {
+    FakeRepo repo;
+    ordo::AppModel model = make_model(repo);
+
+    ordo::TaskForm form = make_activity_form();
+    form.start.clear();
+    const auto result = model.create(form);
+
+    ORDO_CHECK(!result.has_value());
+    ORDO_CHECK(result.status().code == ordo::ErrorCode::InvalidFormat);
+    ORDO_CHECK(repo.tasks.empty());
+}
+
+ORDO_TEST(app_model_form_for_round_trips_activity) {
+    FakeRepo repo;
+    ordo::AppModel model = make_model(repo);
+
+    const auto created = model.create(make_activity_form());
+    ORDO_CHECK(created.has_value());
+
+    const auto form = model.form_for(created.value());
+    ORDO_CHECK(form.has_value());
+    ORDO_CHECK_EQ(form.value().kind, std::string{"activity"});
+    ORDO_CHECK_EQ(form.value().start, std::string{"2026-12-01 19:00"});
+    ORDO_CHECK_EQ(form.value().deadline, std::string{"2026-12-01 20:00"});
 }
 
 ORDO_TEST(app_model_update_preserves_review_fields) {
@@ -218,6 +270,35 @@ ORDO_TEST(app_model_list_ranks_by_score) {
     const auto rows = model.list(query);
     ORDO_CHECK(rows.has_value());
     ORDO_CHECK_EQ(rows.value()[0].title, std::string{"紧急任务"});
+}
+
+ORDO_TEST(app_model_plan_today_returns_formatted_rows) {
+    FakeRepo repo;
+    ordo::AppModel model = make_model(repo);
+    ORDO_CHECK(model.create(make_form("作业")).has_value());
+
+    const auto plan = model.plan_today();
+    ORDO_CHECK(plan.has_value());
+    ORDO_CHECK_EQ(plan.value().total_free, ordo::Minutes{270});
+    ORDO_CHECK_EQ(plan.value().total_assigned, ordo::Minutes{90});
+    ORDO_CHECK_EQ(plan.value().rows.size(), std::size_t{1});
+    ORDO_CHECK_EQ(plan.value().rows[0].title, std::string{"作业"});
+    ORDO_CHECK_EQ(plan.value().rows[0].kind_label, std::string{"其他"});
+    ORDO_CHECK_EQ(plan.value().rows[0].time_text, std::string{"18:30-20:00"});
+}
+
+ORDO_TEST(app_model_plan_today_reports_warnings) {
+    FakeRepo repo;
+    ordo::AppModel model = make_model(repo);
+
+    ordo::TaskForm form = make_form("大任务");
+    form.estimate = "1000";
+    ORDO_CHECK(model.create(form).has_value());
+
+    const auto plan = model.plan_today();
+    ORDO_CHECK(plan.has_value());
+    ORDO_CHECK(!plan.value().warnings.empty());
+    ORDO_CHECK(plan.value().warnings[0].find("#1") != std::string::npos);
 }
 
 ORDO_TEST(app_model_stats_reflects_repository) {

@@ -14,7 +14,7 @@ namespace ordo::gui {
 namespace {
 
 constexpr int kClientWidth = 460;
-constexpr int kClientHeight = 336;
+constexpr int kClientHeight = 372;
 constexpr int kMargin = 18;
 constexpr int kLabelWidth = 90;
 constexpr int kInputX = 118;
@@ -31,15 +31,19 @@ enum ControlId : int {
     kCancelButton = 1008,
     kErrorLabel = 1009,
     kStateLabel = 1010,
+    kKindCombo = 1011,
+    kDeadlineLabel = 1012,
 };
 
 struct DialogState {
     HWND hwnd{};
     HWND title_edit{};
     HWND course_edit{};
+    HWND kind_combo{};
     HWND importance_combo{};
     HWND estimate_edit{};
     HWND deadline_picker{};
+    HWND deadline_label{};
     HWND state_combo{};
     HWND state_label{};
     HWND error_label{};
@@ -120,6 +124,19 @@ void select_combo_text(HWND combo, int index) {
     SendMessageW(combo, CB_SETCURSEL, static_cast<WPARAM>(index), 0);
 }
 
+int kind_index_from_text(const std::string& text) {
+    const std::string value = text.empty() ? std::string{"other"} : text;
+    const std::optional<TaskKind> kind = parse_task_kind(value);
+    return kind.has_value() ? static_cast<int>(*kind) : static_cast<int>(TaskKind::Other);
+}
+
+// 活动把同一控件从"截止时间"解释为"开始时间"，避免再加一个日期选择器。
+void update_kind_ui(DialogState& state) {
+    const int index = static_cast<int>(SendMessageW(state.kind_combo, CB_GETCURSEL, 0, 0));
+    const bool activity = index == static_cast<int>(TaskKind::Activity);
+    SetWindowTextW(state.deadline_label, activity ? L"开始时间" : L"截止时间");
+}
+
 void create_controls(DialogState& state) {
     const auto s = [dpi = state.dpi](int value) { return scale_for_dpi(dpi, value); };
     const int row = s(36);
@@ -136,10 +153,11 @@ void create_controls(DialogState& state) {
 
     label(-1, L"标题", first_row);
     label(-1, L"课程", first_row + row);
-    label(-1, L"重要度", first_row + row * 2);
-    label(-1, L"预估（分钟）", first_row + row * 3);
-    label(-1, L"截止时间", first_row + row * 4);
-    state.state_label = label(kStateLabel, L"状态", first_row + row * 5);
+    label(-1, L"类型", first_row + row * 2);
+    label(-1, L"重要度", first_row + row * 3);
+    label(-1, L"预估（分钟）", first_row + row * 4);
+    state.deadline_label = label(kDeadlineLabel, L"截止时间", first_row + row * 5);
+    state.state_label = label(kStateLabel, L"状态", first_row + row * 6);
 
     state.title_edit =
         create_control(L"EDIT", L"", WS_TABSTOP | ES_AUTOHSCROLL | WS_BORDER, s(kInputX),
@@ -150,9 +168,18 @@ void create_controls(DialogState& state) {
                        first_row + row, s(kInputWidth), input_height, state.hwnd, kCourseEdit,
                        state.font);
 
+    state.kind_combo =
+        create_control(L"COMBOBOX", L"", WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL, s(kInputX),
+                       first_row + row * 2, s(150), s(180), state.hwnd, kKindCombo, state.font);
+    SendMessageW(state.kind_combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"课程作业"));
+    SendMessageW(state.kind_combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"自主学习"));
+    SendMessageW(state.kind_combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"活动"));
+    SendMessageW(state.kind_combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"复习考试"));
+    SendMessageW(state.kind_combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"其他"));
+
     state.importance_combo =
         create_control(L"COMBOBOX", L"", WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL, s(kInputX),
-                       first_row + row * 2, s(90), s(160), state.hwnd, kImportanceCombo,
+                       first_row + row * 3, s(90), s(160), state.hwnd, kImportanceCombo,
                        state.font);
     for (int value = 1; value <= 5; ++value) {
         const std::wstring item = std::to_wstring(value);
@@ -162,18 +189,18 @@ void create_controls(DialogState& state) {
 
     state.estimate_edit =
         create_control(L"EDIT", L"", WS_TABSTOP | ES_AUTOHSCROLL | ES_NUMBER | WS_BORDER,
-                       s(kInputX), first_row + row * 3, s(kInputWidth), input_height,
+                       s(kInputX), first_row + row * 4, s(kInputWidth), input_height,
                        state.hwnd, kEstimateEdit, state.font);
 
     state.deadline_picker =
         create_control(DATETIMEPICK_CLASSW, L"", WS_TABSTOP | DTS_SHORTDATEFORMAT, s(kInputX),
-                       first_row + row * 4, s(kInputWidth), input_height, state.hwnd,
+                       first_row + row * 5, s(kInputWidth), input_height, state.hwnd,
                        kDeadlinePicker, state.font);
     DateTime_SetFormat(state.deadline_picker, L"yyyy-MM-dd HH:mm");
 
     state.state_combo =
         create_control(L"COMBOBOX", L"", WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL, s(kInputX),
-                       first_row + row * 5, s(140), s(160), state.hwnd, kStateCombo,
+                       first_row + row * 6, s(140), s(160), state.hwnd, kStateCombo,
                        state.font);
     SendMessageW(state.state_combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"待办"));
     SendMessageW(state.state_combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"进行中"));
@@ -181,7 +208,7 @@ void create_controls(DialogState& state) {
     SendMessageW(state.state_combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"已放弃"));
 
     state.error_label =
-        create_control(L"STATIC", L"", SS_LEFT, s(kMargin), first_row + row * 6,
+        create_control(L"STATIC", L"", SS_LEFT, s(kMargin), first_row + row * 7,
                        s(kClientWidth - kMargin * 2), s(42), state.hwnd, kErrorLabel,
                        state.font);
 
@@ -190,12 +217,12 @@ void create_controls(DialogState& state) {
     const int cancel_x = s(kClientWidth - kMargin - 84);
     const int save_x = cancel_x - s(8) - button_width;
     CreateWindowExW(0, L"BUTTON", L"取消",
-                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, cancel_x, s(292),
+                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, cancel_x, s(328),
                     button_width, button_height, state.hwnd,
                     reinterpret_cast<HMENU>(static_cast<INT_PTR>(kCancelButton)),
                     GetModuleHandleW(nullptr), nullptr);
     CreateWindowExW(0, L"BUTTON", L"保存",
-                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON, save_x, s(292),
+                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON, save_x, s(328),
                     button_width, button_height, state.hwnd,
                     reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSaveButton)),
                     GetModuleHandleW(nullptr), nullptr);
@@ -214,8 +241,14 @@ void create_controls(DialogState& state) {
     select_combo_text(state.importance_combo, importance >= 1 && importance <= 5 ? importance - 1
                                                                                  : 2);
 
+    const int kind_index = kind_index_from_text(state.initial.kind);
+    select_combo_text(state.kind_combo, kind_index);
+
     if (state.edit_id.has_value()) {
-        const SYSTEMTIME deadline = system_time_from_text(state.initial.deadline);
+        const bool activity = kind_index == static_cast<int>(TaskKind::Activity);
+        const std::string picker_text =
+            activity && !state.initial.start.empty() ? state.initial.start : state.initial.deadline;
+        const SYSTEMTIME deadline = system_time_from_text(picker_text);
         DateTime_SetSystemtime(state.deadline_picker, GDT_VALID, &deadline);
         const int state_index =
             static_cast<int>(state.initial.state.value_or(TaskState::Todo));
@@ -227,6 +260,8 @@ void create_controls(DialogState& state) {
         ShowWindow(state.state_label, SW_HIDE);
         ShowWindow(state.state_combo, SW_HIDE);
     }
+
+    update_kind_ui(state);
 }
 
 void save_dialog(DialogState& state) {
@@ -241,9 +276,23 @@ void save_dialog(DialogState& state) {
     }
     form.importance = std::to_string(importance + 1);
 
-    SYSTEMTIME deadline{};
-    DateTime_GetSystemtime(state.deadline_picker, &deadline);
-    form.deadline = to_utf8(format_system_time(deadline));
+    int kind_index = static_cast<int>(SendMessageW(state.kind_combo, CB_GETCURSEL, 0, 0));
+    if (kind_index < 0) {
+        kind_index = static_cast<int>(TaskKind::Other);
+    }
+    const TaskKind kind = static_cast<TaskKind>(kind_index);
+    form.kind = std::string{to_string(kind)};
+
+    SYSTEMTIME picker{};
+    DateTime_GetSystemtime(state.deadline_picker, &picker);
+    const std::string picker_text = to_utf8(format_system_time(picker));
+    if (is_fixed_time(kind)) {
+        // 活动把这个控件当"开始时间"用；截止时间由 AppModel 按开始 + 预估补全。
+        form.start = picker_text;
+        form.deadline.clear();
+    } else {
+        form.deadline = picker_text;
+    }
 
     if (state.edit_id.has_value()) {
         int index = static_cast<int>(SendMessageW(state.state_combo, CB_GETCURSEL, 0, 0));
@@ -289,6 +338,10 @@ LRESULT CALLBACK dialog_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
                 break;
             }
             const int id = LOWORD(wparam);
+            if (id == kKindCombo && HIWORD(wparam) == CBN_SELCHANGE) {
+                update_kind_ui(*state);
+                return 0;
+            }
             if (id == kSaveButton && HIWORD(wparam) == BN_CLICKED) {
                 save_dialog(*state);
                 return 0;
@@ -370,8 +423,11 @@ bool show_task_dialog(HWND parent, int dpi, AppModel& model, std::optional<TaskI
     } else {
         state.initial.title.clear();
         state.initial.course.clear();
+        state.initial.kind = "other";
         state.initial.importance = "3";
         state.initial.estimate = "60";
+        state.initial.deadline.clear();
+        state.initial.start.clear();
     }
 
     RECT parent_rect{};

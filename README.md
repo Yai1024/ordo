@@ -14,9 +14,9 @@ Ordo 要回答的是：*今晚这几小时，先做哪件、做多久、哪件�
 
 | 项 | 值 |
 | --- | --- |
-| 版本 | `0.1.0`（M1.5 图形界面） |
-| 阶段 | 任务 CRUD、CSV 持久化、加权排序 / EDF、CLI 菜单、Win32 图形界面 |
-| 测试 | 49 个用例全部通过（`mingw32-make test`） |
+| 版本 | `0.2.0`（M2 编排） |
+| 阶段 | 任务 CRUD、CSV 持久化、任务类型、加权排序 / EDF、时间装箱与冲突告警、CLI 菜单、Win32 图形界面 |
+| 测试 | 86 个用例全部通过（`mingw32-make test`） |
 | 构建 | 通过（MinGW-w64 g++ 16.2.0） |
 
 ---
@@ -33,25 +33,36 @@ mingw32-make clean      # 清理
 
 ![Ordo 主窗口](docs/gui/main-window.png)
 
-图形界面支持：添加 / 编辑 / 标记完成 / 删除、状态筛选、两种排序、实时统计。
-右侧"今日计划"是 M2 的占位区域，不显示假数据。
+图形界面支持：添加 / 编辑 / 标记完成 / 删除、状态筛选、两种排序、实时统计；
+任务类型（课程作业 / 自主学习 / 活动 / 复习考试 / 其他）；右侧"今日计划"显示真实时间块、
+未排原因与窗口时长。活动类任务按固定开始时间整块占位。
 
 命令行常用命令：
 
 ```bash
-# 添加：标题与截止时间必填；截止只写日期时按当天 23:59
-./bin/ordo task add "高数第3章习题" --due "2026-10-30 23:59" \
+# 添加课程作业：标题与截止时间必填；截止只写日期时按当天 23:59
+./bin/ordo task add "高数第3章习题" --kind coursework --due "2026-10-30 23:59" \
     --course 高等数学 --importance 4 --est 90
+
+# 添加活动：用 --start 指定固定开始时间，截止时间自动补为开始 + 预估
+./bin/ordo task add "社团例会" --kind activity --start "2026-10-28 19:00" --est 60
 
 ./bin/ordo task list                  # 默认只看未完成任务
 ./bin/ordo task list --state all      # 全部状态
 ./bin/ordo task list --rank score     # 加权优先级排序
 ./bin/ordo task list --rank edf       # 最早截止优先
 ./bin/ordo task done 1
-./bin/ordo task edit 1 --importance 5 --due "2026-10-28 12:00"
+./bin/ordo task edit 1 --kind review --importance 5
 ./bin/ordo task remove 1
 ./bin/ordo task stats
+
+./bin/ordo plan today                 # 今日时间表与未排原因
+./bin/ordo plan week --rank edf       # 滚动 7 天，按最早截止排
 ```
+
+任务类型：`coursework`（课程作业）、`selfstudy`（自主学习）、`activity`（活动，
+固定开始时间）、`review`（复习考试）、`other`（其他，旧数据默认值）。
+类型影响打分系数与装箱方式，详见 `docs/adr/0003-planning.md`。
 
 数据默认写入 `data/tasks.csv`；`--data <路径>` 可指定其他文件（便于演示与测试）。
 程序启动时会把 Windows 控制台切到 UTF-8，中文输入输出不会乱码。
@@ -74,6 +85,7 @@ mingw32-make clean      # 清理
 | [`docs/GUI-INTERFACE.md`](docs/GUI-INTERFACE.md) | 外部 GUI 接入契约：`ui::AppModel` 的职责与调用方式 |
 | [`docs/adr/0001-architecture.md`](docs/adr/0001-architecture.md) | 架构决策记录：为什么四层、为什么 Make、为什么不用异常 |
 | [`docs/adr/0002-gui-layer.md`](docs/adr/0002-gui-layer.md) | GUI 适配器、界面模型层与 M1.5 的决策记录 |
+| [`docs/adr/0003-planning.md`](docs/adr/0003-planning.md) | 任务类型、活动固定时间、打分系数与 M2 编排语义 |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | 提交规范与代码风格 |
 | [`CHANGELOG.md`](CHANGELOG.md) | 版本变更 |
 | [`LICENSE`](LICENSE) | MIT |

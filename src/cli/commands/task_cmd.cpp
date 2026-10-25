@@ -67,15 +67,15 @@ int report_error(AppContext& ctx, const Status& status) {
 
 void print_table_header(std::ostream& out) {
     out << std::left << std::setw(4) << "ID" << std::setw(8) << "STATE" << std::setw(4) << "IMP"
-        << std::setw(5) << "EST" << std::setw(18) << "DEADLINE" << "TITLE\n";
+        << std::setw(5) << "EST" << std::setw(18) << "DEADLINE" << "TITLE [类型]\n";
 }
 
 void print_task_row(std::ostream& out, const Task& task) {
     out << std::left << std::setw(4) << task.id << std::setw(8) << to_string(task.state)
         << std::setw(4) << task.importance << std::setw(5) << task.estimate << std::setw(18)
-        << format_datetime(task.deadline) << task.title;
+        << format_datetime(task.deadline) << task.title << " [" << kind_label(task.kind) << ']';
     if (!task.course.empty()) {
-        out << " [" << task.course << "]";
+        out << " (" << task.course << ')';
     }
     out << '\n';
 }
@@ -87,8 +87,9 @@ public:
     std::string_view name() const noexcept override { return "task.add"; }
 
     std::string_view help() const noexcept override {
-        return "添加任务: task add <标题> --due \"YYYY-MM-DD HH:MM\" "
-               "[--course 课程] [--importance 1-5] [--est 分钟]";
+        return "添加任务: task add <标题> [--kind coursework|selfstudy|activity|review|other] "
+               "--due \"YYYY-MM-DD HH:MM\" [--course 课程] [--importance 1-5] [--est 分钟]；"
+               "活动类改用 --start \"YYYY-MM-DD HH:MM\"";
     }
 
     int execute(const Args& args, AppContext& ctx) override {
@@ -106,13 +107,15 @@ public:
             return usage_error(ctx, "缺少任务标题", help());
         }
 
-        const std::optional<std::string> due_text = args.flag("due");
-        if (!due_text.has_value()) {
-            return usage_error(ctx, "缺少 --due 截止时间", help());
-        }
-        const std::optional<TimePoint> deadline = parse_datetime(*due_text);
-        if (!deadline.has_value()) {
-            return usage_error(ctx, "截止时间格式应为 YYYY-MM-DD HH:MM", help());
+        TaskKind kind = TaskKind::Other;
+        if (const std::optional<std::string> value = args.flag("kind")) {
+            const std::optional<TaskKind> parsed = parse_task_kind(trim(*value));
+            if (!parsed.has_value()) {
+                return usage_error(ctx,
+                                   "--kind 只能是 coursework/selfstudy/activity/review/other",
+                                   help());
+            }
+            kind = *parsed;
         }
 
         int importance = kDefaultImportance;
@@ -125,12 +128,52 @@ public:
         }
 
         Minutes estimate = 0;
+        bool estimate_given = false;
         if (const std::optional<std::string> value = args.flag("est")) {
             const std::optional<int> parsed = parse_int_value(*value);
             if (!parsed.has_value()) {
                 return usage_error(ctx, "--est 必须是整数分钟", help());
             }
             estimate = static_cast<Minutes>(*parsed);
+            estimate_given = true;
+        }
+
+        std::optional<TimePoint> deadline;
+        if (const std::optional<std::string> value = args.flag("due")) {
+            const std::optional<TimePoint> parsed = parse_datetime(*value);
+            if (!parsed.has_value()) {
+                return usage_error(ctx, "截止时间格式应为 YYYY-MM-DD HH:MM", help());
+            }
+            deadline = *parsed;
+        }
+
+        std::optional<TimePoint> fixed_start;
+        if (is_fixed_time(kind)) {
+            const std::optional<std::string> value = args.flag("start");
+            if (!value.has_value()) {
+                return usage_error(ctx, "活动类任务需要 --start 开始时间", help());
+            }
+            const std::optional<TimePoint> parsed = parse_datetime(*value);
+            if (!parsed.has_value()) {
+                return usage_error(ctx, "开始时间格式应为 YYYY-MM-DD HH:MM", help());
+            }
+            fixed_start = *parsed;
+            if (!estimate_given) {
+                estimate = ctx.schedule.default_estimate;
+            }
+            if (estimate <= 0) {
+                return usage_error(ctx, "活动类任务的 --est 必须大于 0", help());
+            }
+            if (!deadline.has_value()) {
+                deadline = add_minutes(*fixed_start, estimate);
+            }
+        } else {
+            if (args.has_flag("start")) {
+                return usage_error(ctx, "只有活动类任务可以使用 --start", help());
+            }
+            if (!deadline.has_value()) {
+                return usage_error(ctx, "缺少 --due 截止时间", help());
+            }
         }
 
         Task draft;
@@ -139,6 +182,8 @@ public:
         draft.importance = importance;
         draft.estimate = estimate;
         draft.deadline = *deadline;
+        draft.kind = kind;
+        draft.fixed_start = fixed_start;
 
         TaskService service(ctx.repo);
         auto result = service.add(std::move(draft));
@@ -147,8 +192,12 @@ public:
         }
 
         const Task& added = result.value();
-        ctx.out << "已添加任务 #" << added.id << "：" << added.title << "（截止 "
-                << format_datetime(added.deadline) << "）\n";
+        ctx.out << "已添加任务 #" << added.id << "：" << added.title << "（"
+                << kind_label(added.kind) << "，";
+        if (added.fixed_start.has_value()) {
+            ctx.out << "开始 " << format_datetime(*added.fixed_start) << "，";
+        }
+        ctx.out << "截止 " << format_datetime(added.deadline) << "）\n";
         return kExitOk;
     }
 };
@@ -269,8 +318,9 @@ public:
     std::string_view name() const noexcept override { return "task.edit"; }
 
     std::string_view help() const noexcept override {
-        return "修改任务: task edit <id> [--title ...] [--course ...] [--importance 1-5] "
-               "[--est 分钟] [--due ...] [--state ...]";
+        return "修改任务: task edit <id> [--title ...] [--course ...] "
+               "[--kind coursework|selfstudy|activity|review|other] [--importance 1-5] "
+               "[--est 分钟] [--due ...] [--start ...] [--state ...]";
     }
 
     int execute(const Args& args, AppContext& ctx) override {
@@ -332,9 +382,46 @@ public:
             task.state = *parsed;
             changed = true;
         }
+        if (const std::optional<std::string> value = args.flag("kind")) {
+            const std::optional<TaskKind> parsed = parse_task_kind(trim(*value));
+            if (!parsed.has_value()) {
+                return usage_error(ctx,
+                                   "--kind 只能是 coursework/selfstudy/activity/review/other",
+                                   help());
+            }
+            task.kind = *parsed;
+            changed = true;
+        }
+        if (const std::optional<std::string> value = args.flag("start")) {
+            const std::optional<TimePoint> parsed = parse_datetime(*value);
+            if (!parsed.has_value()) {
+                return usage_error(ctx, "开始时间格式应为 YYYY-MM-DD HH:MM", help());
+            }
+            task.fixed_start = *parsed;
+            changed = true;
+        }
 
         if (!changed) {
             return usage_error(ctx, "没有指定要修改的字段", help());
+        }
+
+        if (is_fixed_time(task.kind)) {
+            if (!task.fixed_start.has_value()) {
+                return usage_error(ctx, "活动类任务必须指定 --start", help());
+            }
+            if (task.estimate <= 0) {
+                return usage_error(ctx, "活动类任务的预估时长必须大于 0", help());
+            }
+            // 没显式给 --due 时，按开始时间 + 预估自动顺延，避免改类型后立刻校验失败。
+            const TimePoint minimum_deadline = add_minutes(*task.fixed_start, task.estimate);
+            if (!args.has_flag("due") && task.deadline < minimum_deadline) {
+                task.deadline = minimum_deadline;
+            }
+        } else {
+            if (args.has_flag("start")) {
+                return usage_error(ctx, "只有活动类任务可以使用 --start", help());
+            }
+            task.fixed_start.reset();
         }
 
         const Status updated = service.update(task.id, task);

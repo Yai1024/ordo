@@ -13,6 +13,12 @@ ORDO_TEST(datetime_round_trips_through_text) {
     ORDO_CHECK_EQ(ordo::format_date(*parsed), std::string{"2026-10-30"});
 }
 
+ORDO_TEST(format_time_uses_hh_mm) {
+    const auto point = ordo::parse_datetime("2026-10-30 08:05");
+    ORDO_CHECK(point.has_value());
+    ORDO_CHECK_EQ(ordo::format_time(*point), std::string{"08:05"});
+}
+
 ORDO_TEST(date_only_means_end_of_day) {
     const auto date_only = ordo::parse_datetime("2026-10-30");
     const auto end_of_day = ordo::parse_datetime("2026-10-30 23:59");
