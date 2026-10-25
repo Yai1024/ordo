@@ -27,6 +27,12 @@ Status Task::validate() const {
     if (review_stage < 0) {
         return Status::fail(ErrorCode::InvalidValue, "复习阶段不能为负数");
     }
+    if (ease_factor < kMinEase || ease_factor > kMaxEase) {
+        return Status::fail(ErrorCode::InvalidValue, "复习难度系数必须在 1.3 到 5.0 之间");
+    }
+    if (interval_days < 0 || interval_days > kMaxIntervalDays) {
+        return Status::fail(ErrorCode::InvalidValue, "复习间隔必须在 0 到 365 天之间");
+    }
     if (deadline.time_since_epoch().count() == 0) {
         return Status::fail(ErrorCode::InvalidValue, "截止时间不能为空");
     }

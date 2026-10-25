@@ -14,9 +14,9 @@ Ordo 要回答的是：*今晚这几小时，先做哪件、做多久、哪件�
 
 | 项 | 值 |
 | --- | --- |
-| 版本 | `0.2.0`（M2 编排） |
-| 阶段 | 任务 CRUD、CSV 持久化、任务类型、加权排序 / EDF、时间装箱与冲突告警、CLI 菜单、Win32 图形界面 |
-| 测试 | 86 个用例全部通过（`mingw32-make test`） |
+| 版本 | `0.3.0`（M3 长期能力） |
+| 阶段 | 任务 CRUD、CSV 持久化、任务类型、加权排序 / EDF、时间装箱与冲突告警、写操作日志、周统计、SM-2 复习、CLI 菜单、Win32 图形界面 |
+| 测试 | 117 个用例全部通过（`mingw32-make test`） |
 | 构建 | 通过（MinGW-w64 g++ 16.2.0） |
 
 ---
@@ -35,7 +35,8 @@ mingw32-make clean      # 清理
 
 图形界面支持：添加 / 编辑 / 标记完成 / 删除、状态筛选、两种排序、实时统计；
 任务类型（课程作业 / 自主学习 / 活动 / 复习考试 / 其他）；右侧"今日计划"显示真实时间块、
-未排原因与窗口时长。活动类任务按固定开始时间整块占位。
+未排原因与窗口时长，并显示最近 7 天完成率与投入分布；复习任务可直接点"复习评分"，
+按 0–5 质量推进 SM-2 间隔。活动类任务按固定开始时间整块占位。
 
 命令行常用命令：
 
@@ -51,14 +52,21 @@ mingw32-make clean      # 清理
 ./bin/ordo task list --state all      # 全部状态
 ./bin/ordo task list --rank score     # 加权优先级排序
 ./bin/ordo task list --rank edf       # 最早截止优先
-./bin/ordo task done 1
+./bin/ordo task done 1 --spent 45     # 完成并记录实际投入
 ./bin/ordo task edit 1 --kind review --importance 5
 ./bin/ordo task remove 1
 ./bin/ordo task stats
 
 ./bin/ordo plan today                 # 今日时间表与未排原因
 ./bin/ordo plan week --rank edf       # 滚动 7 天，按最早截止排
+
+./bin/ordo task review                # 列出到期复习任务
+./bin/ordo task review 1 --quality 4 --spent 30   # SM-2 评分（0 忘记 … 5 毫不费力）
+./bin/ordo stats week                 # 最近 7 天完成率与投入分布
 ```
+
+写操作（添加、修改、完成、删除、复习）会追加到 `data/log.csv`；`list` / `plan` /
+`stats` 等只读命令不写日志。周统计完全基于日志，启用日志前的历史不计入。
 
 任务类型：`coursework`（课程作业）、`selfstudy`（自主学习）、`activity`（活动，
 固定开始时间）、`review`（复习考试）、`other`（其他，旧数据默认值）。
@@ -86,6 +94,7 @@ mingw32-make clean      # 清理
 | [`docs/adr/0001-architecture.md`](docs/adr/0001-architecture.md) | 架构决策记录：为什么四层、为什么 Make、为什么不用异常 |
 | [`docs/adr/0002-gui-layer.md`](docs/adr/0002-gui-layer.md) | GUI 适配器、界面模型层与 M1.5 的决策记录 |
 | [`docs/adr/0003-planning.md`](docs/adr/0003-planning.md) | 任务类型、活动固定时间、打分系数与 M2 编排语义 |
+| [`docs/adr/0004-tracking.md`](docs/adr/0004-tracking.md) | 写操作日志、周统计口径与 SM-2 复习语义 |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | 提交规范与代码风格 |
 | [`CHANGELOG.md`](CHANGELOG.md) | 版本变更 |
 | [`LICENSE`](LICENSE) | MIT |

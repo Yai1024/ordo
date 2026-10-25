@@ -3,7 +3,7 @@
 > **本文件是工程的唯一指导文件。** 任何实现若与本文件不一致，必须先修订本文件并记入 ADR，
 > 再改代码。禁止"代码先行、文档追认"。
 >
-> - 文档版本：`0.2.0-draft`
+> - 文档版本：`0.3.0-draft`
 > - 生效日期：2026-10-25
 > - 适用仓库：`project_basic_cpp`（GitHub `Yai1024/ordo`，私有，main 分支）
 > - 对应课程：《高级语言程序设计》综合实验大作业 · **选题 01 学习任务安排系统**
@@ -55,7 +55,7 @@
 | 作业原型 | 选题 01「学习任务安排系统」，主要方法：规则判断与优先级排序，难度档：入门 |
 | 命名空间 | `ordo` |
 | 可执行文件 | `ordo`（Windows 下为 `bin/ordo.exe`） |
-| 版本号方案 | 语义化版本 `MAJOR.MINOR.PATCH`，当前 `0.2.0` |
+| 版本号方案 | 语义化版本 `MAJOR.MINOR.PATCH`，当前 `0.3.0` |
 | 许可证 | MIT（见 `LICENSE`） |
 
 **为什么叫 Ordo**：本题的内核不是"存任务"，而是"给任务排序与安放"。
@@ -69,7 +69,7 @@
 
 Ordo 不是一次性的作业程序，而是一个**每学期换数据、不换代码**的个人调度工具：
 
-1. **数据自增长**：每天运行一次，`log.csv` 就多一行；学期结束可用它复盘。
+1. **数据自增长**：每做一次写操作，`log.csv` 就多一行；学期结束可用它复盘。
 2. **换领域只换数据**：换课程、换作息，只改 `data/*.csv` 与 `config.ini`。
 3. **单机、纯文本、零依赖**：一个 exe + 几个 csv，十年后仍能编译运行。
 4. **算法可替换**：优先级函数、装箱策略都是可注入的接口，后面能换更强的实现而不动上层。
@@ -186,7 +186,7 @@ project_basic_cpp/
 ├── data/                                  运行期数据（受版本控制，便于复现）
 │   ├── config.ini                   [M1]  作息配置：每日可用时段、默认时长
 │   ├── tasks.csv                    [M1]  任务表（主数据）
-│   ├── log.csv                      [M3]  执行日志：每次运行追加一行
+│   ├── log.csv                      [M3]  写操作事件日志：只追加，读命令不写
 │   └── samples/                     [M4]  测试数据集
 │       ├── basic.csv                [M4]  正常样例（≥20 条）
 │       ├── edge-empty.csv           [M4]  空表
@@ -201,7 +201,8 @@ project_basic_cpp/
 │   ├── adr/
 │   │   ├── 0001-architecture.md     [M0]  架构决策记录第 1 号
 │   │   ├── 0002-gui-layer.md        [M1.5] GUI 适配器与界面模型层
-│   │   └── 0003-planning.md         [M2]  任务类型、活动固定时间与编排语义
+│   │   ├── 0003-planning.md         [M2]  任务类型、活动固定时间与编排语义
+│   │   └── 0004-tracking.md         [M3]  事件日志、周统计与 SM-2 复习语义
 │   └── report/                      [M4]  实验报告与演示脚本
 │       ├── report.md                [M4]  作业要求的实验报告
 │       └── demo.md                  [M4]  演示流程脚本（逐条命令）
@@ -220,6 +221,7 @@ project_basic_cpp/
 │   │   ├── repository.h             [M1]  ITaskRepository 抽象基类
 │   │   ├── csv.h                    [M1]  CSV 行切分/转义/字段解析（纯函数）
 │   │   ├── config.h                 [M2]  config.ini 解析（作息与装箱策略）
+│   │   ├── event_log.h              [M3]  IEventLog / CsvEventLog：log.csv 追加与读取
 │   │   └── file_repository.h        [M1]  CsvTaskRepository 具体实现
 │   │
 │   ├── algo/                              纯函数算法，无 I/O
@@ -231,7 +233,7 @@ project_basic_cpp/
 │   │
 │   ├── app/                               应用服务，串联算法与存储
 │   │   ├── context.h                [M1]  运行期上下文：仓库引用、配置、时钟
-│   │   ├── task_service.h           [M1]  增删改查 + 统计
+│   │   ├── task_service.h           [M1]  增删改查 + 统计；[M3] 日志、评分、周统计
 │   │   └── plan_service.h           [M2]  编排：空闲时段 → 装箱 → 冲突告警
 │   │
 │   ├── cli/                               交互层（命令行适配器）
@@ -268,6 +270,7 @@ project_basic_cpp/
     ├── test_packer.cpp              [M2]  恰好装满、超载、零时长、活动占位
     ├── test_config.cpp              [M2]  INI 缺省、非法值、时间解析
     ├── test_plan_service.cpp        [M2]  空闲时段与今日/本周编排
+    ├── test_event_log.cpp           [M3]  日志追加、往返、损坏文件
     └── test_sm2.cpp                 [M3]  间隔序列与边界
 ```
 
@@ -278,7 +281,7 @@ project_basic_cpp/
 | M0 | 3 | 只验证工具链 |
 | M1 | 约 14 | 基本要求闭环，够用即止 |
 | M2 | 约 10 | 编排是唯一新算法域；含配置读取与三个测试文件 |
-| M3 | 约 4 | 统计与复习是增量 |
+| M3 | 约 8 | 日志、SM-2、统计命令与两份测试；比原估计多，因为日志要独立于任务仓库 |
 | M4 | 0 | 只写数据与文档 |
 
 **超出预算的新文件必须先在 §5.2 登记**。这条规则是为了防止"每个功能开一个新文件"式的目录膨胀。
@@ -312,8 +315,10 @@ struct Task {
     Minutes     estimate{0};                 // 预估耗时，>= 0
     TimePoint   deadline{};                  // 截止时刻
     TaskState   state{TaskState::Todo};
-    int         review_stage{0};             // SM-2 阶段，0 表示未进入复习
-    std::optional<TimePoint> last_review;    // 上次复习时刻
+    int         review_stage{0};             // SM-2 重复次数，0 表示未进入复习
+    double      ease_factor{2.5};            // SM-2 难度系数，[1.3, 5.0]
+    int         interval_days{0};            // 当前复习间隔（天），0 表示尚未进入复习
+    std::optional<TimePoint> last_review;    // 上次复习时刻；为空表示从未复习
     TaskKind    kind{TaskKind::Other};       // 业务类型；旧数据默认 other
     std::optional<TimePoint> fixed_start;    // 仅 Activity：固定开始时刻
 
@@ -470,16 +475,25 @@ Sm2State sm2_next(const Sm2State&, int quality /*0..5*/, TimePoint now);
 // ---- app/task_service.h ----
 class TaskService {
 public:
-    explicit TaskService(ITaskRepository& repo);
+    // log 可空：测试与只读场景不需要日志；生产装配点必须传入 CsvEventLog。
+    explicit TaskService(ITaskRepository& repo, IEventLog* log = nullptr);
 
     Result<Task>     add(Task draft);                    // 分配 id、校验、落盘
     Status           update(TaskId, const Task& patch);
+    Status           set_state(TaskId, TaskState, std::optional<Minutes> spent = std::nullopt);
     Status           remove(TaskId);
     Result<Task>     get(TaskId) const;
     Result<std::vector<Task>> list(std::optional<TaskState>) const;
     Result<Stats>    stats(TimePoint now) const;         // 计数、超期数、总时长
+
+    // M3：SM-2 评分与周统计（ADR-0004）。
+    Result<Task>     grade_review(TaskId, int quality, TimePoint now,
+                                  std::optional<Minutes> spent = std::nullopt);
+    Result<std::vector<Task>> due_reviews(TimePoint now) const;
+    Result<WeeklyStats> weekly_stats(TimePoint now) const;
 private:
     ITaskRepository& repo_;
+    IEventLog*       log_;                               // 旁路审计，可为空
 };
 
 // ---- app/plan_service.h ----
@@ -598,10 +612,13 @@ Dispatcher ──C1──▶ PlanCommand::execute
 | 8 | `review_stage` | int | ≥ 0 | `0` |
 | 9 | `kind` | enum | `coursework` / `selfstudy` / `activity` / `review` / `other` | `other` |
 | 10 | `fixed_start` | datetime | 仅 `activity` 必填，其余留空 | `2026-10-28 19:00` |
+| 11 | `ease_factor` | real | `[1.3, 5.0]`，两位小数 | `2.50` |
+| 12 | `interval_days` | int | `0–365` | `6` |
+| 13 | `last_review` | datetime | 可空 | `2026-10-23 20:00` |
 
 首行为表头。字段顺序固定，新增字段**只能追加到行尾**（保证旧文件可读）。
-读取时同时接受旧 8 列表头（`kind` 默认 `other`、`fixed_start` 为空）与新 10 列表头；
-保存时统一写新表头。
+读取时同时接受 8 列（M1）、10 列（M2）与 13 列（M3）表头，缺列使用默认值；
+保存时统一写 13 列表头，旧文件在第一次写入时自动迁移（ADR-0004）。
 
 ### 9.2 `data/config.ini`
 
@@ -621,13 +638,25 @@ min_block        = 15
 
 ### 9.3 `data/log.csv`
 
-| 字段 | 含义 |
-| --- | --- |
-| `timestamp` | 运行时刻 |
-| `command` | 执行的命令名 |
-| `task_id` | 关联任务（可空） |
-| `minutes` | 实际投入（`task.done --spent 45`） |
-| `note` | 备注 |
+只记录写操作（ADR-0004），表头固定：
+
+```csv
+timestamp,command,task_id,minutes,note
+2026-10-25 20:15:03,task.done,5,45,交税收作业
+```
+
+| 字段 | 类型 | 约束 | 含义 |
+| --- | --- | --- | --- |
+| `timestamp` | datetime | `YYYY-MM-DD HH:MM:SS` | 动作时刻（本地时间） |
+| `command` | enum | `task.add` / `task.edit` / `task.done` / `task.remove` / `task.review` | 动作名，CLI 与 GUI 共用 |
+| `task_id` | uint64 | 可空 | 关联任务；任务删除后仍保留 |
+| `minutes` | int | 可空，≥ 0 | 实际投入；只有显式给出时才写 |
+| `note` | string | 可空 | 备注；写操作默认写任务标题 |
+
+- 只追加，不重写；文件不存在时首次写入先写表头。
+- 读取时容忍 BOM、CRLF、空行；字段数不为 5、引号未闭合、时间格式错误 → `Corrupted`。
+- `minutes` 非整数或为负 → `InvalidFormat`。
+- 日志写入失败不阻断业务操作（ADR-0004 决策 6）。
 
 ### 9.4 编码与边界
 
@@ -653,8 +682,9 @@ min_block        = 15
 **里程碑纪律**：一个里程碑未验收，不开启下一个。M2 之前不写任何 SM-2 代码。
 M1.5 先于 M2（ADR-0002）：编排算法的接口要围绕 `ui::AppModel` 的计划视图设计。
 
-**当前进度（2026-10-25）**：M0、M1、M1.5、M2 已完成，`mingw32-make test` 共 86 个用例；
-下一步 M3（日志、统计、SM-2）。
+**当前进度（2026-10-25）**：M0、M1、M1.5、M2 已完成，M3 已实现
+（写操作日志、`stats week`、SM-2 复习与 GUI 入口）；用例数与构建结果见 `CHANGELOG.md`。
+下一步 M4（测试数据、实验报告、演示脚本）。
 
 ---
 

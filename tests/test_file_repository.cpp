@@ -1,6 +1,7 @@
 // M1：CSV 仓库的往返与损坏文件处理（OUTLINE §11：C4 必须有往返测试）。
 
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -36,6 +37,9 @@ ordo::Task make_task(ordo::TaskId id, const std::string& title) {
 const std::string kHeader = "id,title,course,importance,estimate,deadline,state,review_stage\n";
 const std::string kHeaderV2 =
     "id,title,course,importance,estimate,deadline,state,review_stage,kind,fixed_start\n";
+const std::string kHeaderV3 =
+    "id,title,course,importance,estimate,deadline,state,review_stage,kind,fixed_start,"
+    "ease_factor,interval_days,last_review\n";
 
 }  // namespace
 
@@ -211,11 +215,93 @@ ORDO_TEST(repository_find_upsert_erase) {
     ordo::Task changed = found.value();
     changed.title = "更新后的标题";
     ORDO_CHECK(repo.upsert(changed).ok());
-    ORDO_CHECK_EQ(repo.find(1).value().title, std::string{"更新后的标题"});
+    const std::string updated_title = repo.find(1).value().title;
+    ORDO_CHECK_EQ(updated_title, std::string{"更新后的标题"});
 
     ORDO_CHECK(repo.erase(1).ok());
     ORDO_CHECK(!repo.find(1).has_value());
     ORDO_CHECK(repo.erase(1).code == ordo::ErrorCode::NotFound);
+
+    std::filesystem::remove(path);
+}
+
+ORDO_TEST(repository_round_trips_review_state) {
+    const std::filesystem::path path = temp_file("ordo_repo_review_state.csv");
+    std::filesystem::remove(path);
+
+    ordo::Task review = make_task(1, "线性代数复习");
+    review.kind = ordo::TaskKind::Review;
+    review.review_stage = 3;
+    review.ease_factor = 2.36;
+    review.interval_days = 16;
+    review.last_review = ordo::add_minutes(kNow, -120);
+
+    ordo::CsvTaskRepository repo(path);
+    ORDO_CHECK(repo.save_all({review}).ok());
+
+    const auto loaded = repo.load_all();
+    ORDO_CHECK(loaded.has_value());
+    ORDO_CHECK_EQ(loaded.value().size(), std::size_t{1});
+    const ordo::Task& reloaded = loaded.value()[0];
+    ORDO_CHECK(reloaded.kind == ordo::TaskKind::Review);
+    ORDO_CHECK_EQ(reloaded.review_stage, 3);
+    ORDO_CHECK_EQ(reloaded.interval_days, 16);
+    ORDO_CHECK(reloaded.last_review.has_value());
+    ORDO_CHECK_EQ(ordo::format_datetime(*reloaded.last_review),
+                  ordo::format_datetime(*review.last_review));
+    ORDO_CHECK(std::abs(reloaded.ease_factor - 2.36) < 1e-9);
+
+    std::filesystem::remove(path);
+}
+
+ORDO_TEST(repository_migrates_v2_header_with_review_defaults) {
+    const std::filesystem::path path = temp_file("ordo_repo_migrate_v2.csv");
+    write_text(path, kHeaderV2 + "1,旧任务,,3,60,2026-10-30 20:00,todo,0,coursework,\n");
+
+    ordo::CsvTaskRepository repo(path);
+    const auto loaded = repo.load_all();
+    ORDO_CHECK(loaded.has_value());
+    ORDO_CHECK_EQ(loaded.value().size(), std::size_t{1});
+    ORDO_CHECK_EQ(loaded.value()[0].ease_factor, ordo::kDefaultEase);
+    ORDO_CHECK_EQ(loaded.value()[0].interval_days, 0);
+    ORDO_CHECK(!loaded.value()[0].last_review.has_value());
+
+    // 第一次保存应迁移到 13 列表头。
+    ORDO_CHECK(repo.save_all(loaded.value()).ok());
+    std::ifstream input(path, std::ios::binary);
+    std::string header;
+    std::getline(input, header);
+    if (!header.empty() && header.back() == '\r') {
+        header.pop_back();
+    }
+    ORDO_CHECK_EQ(header, kHeaderV3.substr(0, kHeaderV3.size() - 1));
+    input.close();
+
+    std::filesystem::remove(path);
+}
+
+ORDO_TEST(repository_rejects_bad_ease_factor) {
+    const std::filesystem::path path = temp_file("ordo_repo_bad_ease.csv");
+    write_text(path, kHeaderV3 +
+                         "1,任务,,3,60,2026-10-30 20:00,todo,0,other,,9.00,0,\n");
+
+    const ordo::CsvTaskRepository repo(path);
+    const auto loaded = repo.load_all();
+    ORDO_CHECK(!loaded.has_value());
+    ORDO_CHECK(loaded.status().code == ordo::ErrorCode::InvalidValue);
+
+    std::filesystem::remove(path);
+}
+
+ORDO_TEST(repository_rejects_non_numeric_ease_factor) {
+    const std::filesystem::path path = temp_file("ordo_repo_nan_ease.csv");
+    write_text(path, kHeaderV3 +
+                         "1,任务,,3,60,2026-10-30 20:00,todo,0,other,,abc,0,\n");
+
+    const ordo::CsvTaskRepository repo(path);
+    const auto loaded = repo.load_all();
+    ORDO_CHECK(!loaded.has_value());
+    ORDO_CHECK(loaded.status().code == ordo::ErrorCode::InvalidFormat);
 
     std::filesystem::remove(path);
 }

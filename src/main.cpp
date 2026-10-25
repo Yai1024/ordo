@@ -3,11 +3,13 @@
 
 #include "ordo/app/context.h"
 #include "ordo/cli/commands/plan_cmd.h"
+#include "ordo/cli/commands/stats_cmd.h"
 #include "ordo/cli/commands/task_cmd.h"
 #include "ordo/cli/dispatcher.h"
 #include "ordo/cli/menu.h"
 #include "ordo/core/types.h"
 #include "ordo/io/config.h"
+#include "ordo/io/event_log.h"
 #include "ordo/io/file_repository.h"
 #include "ordo/version.h"
 
@@ -190,6 +192,8 @@ int main(int argc, char** argv) {
     try {
         // 唯一的依赖装配点：存储实现只在这里构造一次，向下以引用传递。
         ordo::CsvTaskRepository repo(cli.data_path);
+        // 日志与数据文件同目录：--data 指向哪里，log.csv 就跟着去哪里。
+        ordo::CsvEventLog event_log(cli.data_path.parent_path() / "log.csv");
 
         // 配置文件与数据文件同目录；文件不存在时使用内置默认值。
         const std::filesystem::path config_path = cli.data_path.parent_path() / "config.ini";
@@ -199,12 +203,13 @@ int main(int argc, char** argv) {
             return ordo::kExitError;
         }
 
-        ordo::AppContext ctx{repo, std::cout, std::cin,
+        ordo::AppContext ctx{repo, &event_log, std::cout, std::cin,
                              [] { return ordo::Clock::now(); }, schedule.value()};
 
         ordo::Dispatcher dispatcher;
         ordo::register_task_commands(dispatcher);
         ordo::register_plan_commands(dispatcher);
+        ordo::register_stats_commands(dispatcher);
 
         if (cli.want_help) {
             std::cout << "Ordo " << ORDO_VERSION_STRING << " - 学习任务编排器\n\n";

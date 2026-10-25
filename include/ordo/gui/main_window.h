@@ -12,7 +12,7 @@ namespace ordo::gui {
 
 class MainWindow {
 public:
-    MainWindow(ITaskRepository& repo, ScheduleConfig config);
+    MainWindow(ITaskRepository& repo, ScheduleConfig config, IEventLog* log = nullptr);
     ~MainWindow();
 
     MainWindow(const MainWindow&) = delete;
@@ -40,12 +40,14 @@ private:
     void on_edit();
     void on_done();
     void on_remove();
+    void on_review();
 
     HWND hwnd_{};
     HWND list_{};
     HWND add_button_{};
     HWND edit_button_{};
     HWND done_button_{};
+    HWND review_button_{};
     HWND remove_button_{};
     HWND refresh_button_{};
     HWND state_label_{};

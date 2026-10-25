@@ -1,11 +1,13 @@
 // M1：应用层业务规则（OUTLINE §11：用假仓库验证拒绝路径）。
 
 #include <chrono>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "ordo/app/task_service.h"
 #include "ordo/core/task.h"
+#include "ordo/io/event_log.h"
 #include "test_framework.h"
 
 namespace {
@@ -62,6 +64,33 @@ ordo::Task make_draft(const std::string& title, ordo::Minutes estimate = 60,
     task.title = title;
     task.estimate = estimate;
     task.deadline = ordo::add_minutes(kNow, until_deadline);
+    return task;
+}
+
+class FakeLog final : public ordo::IEventLog {
+public:
+    std::vector<ordo::LogEntry> entries;
+
+    ordo::Status append(const ordo::LogEntry& entry) override {
+        entries.push_back(entry);
+        return ordo::Status::success();
+    }
+
+    ordo::Result<std::vector<ordo::LogEntry>> read() const override {
+        return ordo::Result<std::vector<ordo::LogEntry>>::ok(entries);
+    }
+};
+
+ordo::Task make_review_task(ordo::TaskId id, std::optional<ordo::TimePoint> last_review = {},
+                            int stage = 0, int interval_days = 0,
+                            ordo::TaskState state = ordo::TaskState::Todo) {
+    ordo::Task task = make_draft("复习 " + std::to_string(id));
+    task.id = id;
+    task.kind = ordo::TaskKind::Review;
+    task.review_stage = stage;
+    task.interval_days = interval_days;
+    task.last_review = last_review;
+    task.state = state;
     return task;
 }
 
@@ -211,4 +240,162 @@ ORDO_TEST(stats_counts_overdue_and_estimates) {
     ORDO_CHECK_EQ(stats.value().overdue, std::size_t{1});
     ORDO_CHECK_EQ(stats.value().open_estimate, ordo::Minutes{120});
     ORDO_CHECK_EQ(stats.value().done_estimate, ordo::Minutes{45});
+}
+
+ORDO_TEST(service_logs_write_actions) {
+    FakeRepo repo;
+    FakeLog log;
+    ordo::TaskService service(repo, &log);
+
+    const auto added = service.add(make_draft("第一件"));
+    ORDO_CHECK(added.has_value());
+    ORDO_CHECK_EQ(log.entries.size(), std::size_t{1});
+    ORDO_CHECK_EQ(log.entries[0].command, std::string{"task.add"});
+    ORDO_CHECK_EQ(log.entries[0].note, std::string{"第一件"});
+
+    ordo::Task edited = added.value();
+    edited.title = "改过的标题";
+    ORDO_CHECK(service.update(edited.id, edited).ok());
+    ORDO_CHECK_EQ(log.entries.back().command, std::string{"task.edit"});
+
+    ORDO_CHECK(service.set_state(edited.id, ordo::TaskState::Done, 30).ok());
+    ORDO_CHECK_EQ(log.entries.back().command, std::string{"task.done"});
+    ORDO_CHECK(log.entries.back().minutes.has_value());
+    ORDO_CHECK_EQ(*log.entries.back().minutes, ordo::Minutes{30});
+
+    ORDO_CHECK(service.remove(edited.id).ok());
+    ORDO_CHECK_EQ(log.entries.back().command, std::string{"task.remove"});
+    ORDO_CHECK_EQ(log.entries.back().note, std::string{"改过的标题"});
+    ORDO_CHECK_EQ(log.entries.size(), std::size_t{4});
+}
+
+ORDO_TEST(service_set_state_without_change_does_not_log) {
+    FakeRepo repo;
+    FakeLog log;
+    ordo::TaskService service(repo, &log);
+
+    const auto added = service.add(make_draft("待办"));
+    ORDO_CHECK(added.has_value());
+    ORDO_CHECK(service.set_state(added.value().id, ordo::TaskState::Todo).ok());
+    ORDO_CHECK_EQ(log.entries.size(), std::size_t{1});
+}
+
+ORDO_TEST(service_grade_review_updates_sm2_and_reopens) {
+    FakeRepo repo;
+    FakeLog log;
+    repo.tasks.push_back(make_review_task(1, std::nullopt, 0, 0, ordo::TaskState::Done));
+
+    ordo::TaskService service(repo, &log);
+    const auto graded = service.grade_review(1, 4, kNow, 25);
+    ORDO_CHECK(graded.has_value());
+    ORDO_CHECK_EQ(graded.value().review_stage, 1);
+    ORDO_CHECK_EQ(graded.value().interval_days, 1);
+    ORDO_CHECK_EQ(graded.value().ease_factor, 2.5);
+    ORDO_CHECK(graded.value().state == ordo::TaskState::Todo);
+    ORDO_CHECK(graded.value().last_review.has_value());
+    ORDO_CHECK_EQ(ordo::format_datetime(*graded.value().last_review),
+                  ordo::format_datetime(kNow));
+
+    ORDO_CHECK_EQ(log.entries.size(), std::size_t{1});
+    ORDO_CHECK_EQ(log.entries[0].command, std::string{"task.review"});
+    ORDO_CHECK(log.entries[0].minutes.has_value());
+    ORDO_CHECK_EQ(*log.entries[0].minutes, ordo::Minutes{25});
+    ORDO_CHECK_EQ(log.entries[0].note, std::string{"quality=4"});
+}
+
+ORDO_TEST(service_grade_review_rejects_non_review) {
+    FakeRepo repo;
+    FakeLog log;
+    repo.tasks.push_back(make_draft("作业"));
+    repo.tasks[0].id = 1;
+
+    ordo::TaskService service(repo, &log);
+    const auto graded = service.grade_review(1, 5, kNow);
+    ORDO_CHECK(!graded.has_value());
+    ORDO_CHECK(graded.status().code == ordo::ErrorCode::InvalidValue);
+    ORDO_CHECK(log.entries.empty());
+}
+
+ORDO_TEST(service_due_reviews_filters_and_sorts) {
+    FakeRepo repo;
+    repo.tasks.push_back(make_review_task(1));  // 从未复习，最先
+    repo.tasks.push_back(
+        make_review_task(2, ordo::add_minutes(kNow, -7 * ordo::kMinutesPerDay), 2, 6));
+    repo.tasks.push_back(
+        make_review_task(3, ordo::add_minutes(kNow, -2 * ordo::kMinutesPerDay), 2, 6));
+    repo.tasks.push_back(make_review_task(4, std::nullopt, 0, 0, ordo::TaskState::Done));
+    repo.tasks.push_back(make_draft("普通作业"));
+    repo.tasks.back().id = 5;
+
+    ordo::TaskService service(repo);
+    const auto due = service.due_reviews(kNow);
+    ORDO_CHECK(due.has_value());
+    ORDO_CHECK_EQ(due.value().size(), std::size_t{2});
+    ORDO_CHECK_EQ(due.value()[0].id, ordo::TaskId{1});
+    ORDO_CHECK_EQ(due.value()[1].id, ordo::TaskId{2});
+}
+
+ORDO_TEST(service_weekly_stats_counts_completed_and_minutes) {
+    FakeRepo repo;
+    FakeLog log;
+    repo.tasks.push_back(make_draft("已完成"));  // id 1
+    repo.tasks.back().id = 1;
+    repo.tasks.back().state = ordo::TaskState::Done;
+    repo.tasks.push_back(make_review_task(2, std::nullopt, 0, 0));
+    repo.tasks.back().deadline = ordo::add_minutes(kNow, 30 * ordo::kMinutesPerDay);
+    repo.tasks.push_back(make_draft("窗口内到期"));  // id 3
+    repo.tasks.back().id = 3;
+    repo.tasks.back().deadline = ordo::add_minutes(kNow, -60);
+    repo.tasks.push_back(make_draft("旧完成"));  // id 4
+    repo.tasks.back().id = 4;
+    repo.tasks.back().state = ordo::TaskState::Done;
+
+    ordo::LogEntry done;
+    done.timestamp = ordo::add_minutes(kNow, -120);
+    done.command = "task.done";
+    done.task_id = ordo::TaskId{1};
+    log.entries.push_back(done);
+
+    ordo::LogEntry reviewed;
+    reviewed.timestamp = ordo::add_minutes(kNow, -60);
+    reviewed.command = "task.review";
+    reviewed.task_id = ordo::TaskId{2};
+    reviewed.minutes = ordo::Minutes{30};
+    log.entries.push_back(reviewed);
+
+    ordo::LogEntry old_done;
+    old_done.timestamp = ordo::add_minutes(kNow, -10 * ordo::kMinutesPerDay);
+    old_done.command = "task.done";
+    old_done.task_id = ordo::TaskId{4};
+    log.entries.push_back(old_done);
+
+    ordo::TaskService service(repo, &log);
+    const auto stats = service.weekly_stats(kNow);
+    ORDO_CHECK(stats.has_value());
+    ORDO_CHECK_EQ(stats.value().completed, std::size_t{1});
+    ORDO_CHECK_EQ(stats.value().expected, std::size_t{2});
+    ORDO_CHECK(stats.value().has_rate);
+    ORDO_CHECK_EQ(stats.value().completion_percent, 50);
+    ORDO_CHECK_EQ(stats.value().total_minutes, ordo::Minutes{30});
+    ORDO_CHECK_EQ(stats.value().by_kind.size(), std::size_t{1});
+    ORDO_CHECK(stats.value().by_kind[0].kind == ordo::TaskKind::Review);
+    ORDO_CHECK_EQ(stats.value().by_kind[0].minutes, ordo::Minutes{30});
+}
+
+ORDO_TEST(service_weekly_stats_without_log_uses_open_deadlines) {
+    FakeRepo repo;
+    repo.tasks.push_back(make_draft("窗口内到期"));
+    repo.tasks.back().id = 1;
+    repo.tasks.back().deadline = ordo::add_minutes(kNow, -60);
+    repo.tasks.push_back(make_draft("未来"));
+    repo.tasks.back().id = 2;
+    repo.tasks.back().deadline = ordo::add_minutes(kNow, 30 * ordo::kMinutesPerDay);
+
+    ordo::TaskService service(repo);
+    const auto stats = service.weekly_stats(kNow);
+    ORDO_CHECK(stats.has_value());
+    ORDO_CHECK_EQ(stats.value().completed, std::size_t{0});
+    ORDO_CHECK_EQ(stats.value().expected, std::size_t{1});
+    ORDO_CHECK_EQ(stats.value().completion_percent, 0);
+    ORDO_CHECK_EQ(stats.value().total_minutes, ordo::Minutes{0});
 }

@@ -3,7 +3,7 @@
 ================================================================================
 
 文件：      docs/CODE-GUIDE.txt
-版本：      0.4.0（M2 编排；M1/M1.5 见第八、九部分，M2 见第十部分）
+版本：      0.5.0（M3 长期能力；M1/M1.5/M2 见第八至十部分，M3 见第十一部分）
 日期：      2026-10-25
 编码：      UTF-8（Windows 记事本请选"UTF-8"打开，否则中文会乱码）
 
@@ -76,7 +76,7 @@ M2 到 M4 分别要做什么，见 docs/OUTLINE.md 第 10 节。
   成功标志: 屏幕上出现 "==> built: bin/ordo"
 
   命令 2:  ./bin/ordo --version
-  会发生:  运行程序，打印 "ordo 0.2.0"
+  会发生:  运行程序，打印 "ordo 0.3.0"
   说明:    --version 是命令行参数，程序识别到它就直接打印版本然后退出
 
   命令 3:  ./bin/ordo-gui
@@ -223,7 +223,7 @@ M2 之后还会创建：
 
 【它是什么】
   版本号的唯一出处。程序里任何地方要用版本号，都包含这个文件，
-  而不是到处手写 "0.2.0"。将来改版本只改这一处。
+  而不是到处手写 "0.3.0"。将来改版本只改这一处。
 
 【逐行说明】
 
@@ -244,11 +244,11 @@ M2 之后还会创建：
 第 6 行   #define ORDO_VERSION_PATCH 0
           修订号，修 bug 时 +1。
 
-第 8 行   #define ORDO_VERSION_STRING "0.2.0"
+第 8 行   #define ORDO_VERSION_STRING "0.3.0"
           给人看的完整版本字符串。注意值是带双引号的，它是一个字符串字面量。
           有了它，代码里可以写：
               std::cout << "ordo " ORDO_VERSION_STRING;
-          两个字符串字面量挨在一起，C++ 会自动拼接成 "ordo 0.2.0"。
+          两个字符串字面量挨在一起，C++ 会自动拼接成 "ordo 0.3.0"。
 
 【一个坑】
   三个数字宏和这个字符串宏是分开维护的，改版本时必须一起改，否则会对不上。
@@ -508,7 +508,7 @@ M2 之后还会创建：
             断言：版本字符串不能是空的。
 
 第 10 行    ORDO_CHECK_EQ(version.find('.'), std::size_t{1});
-            断言：第一个点的位置必须是下标 1，也就是 "0.2.0" 里 0 和 1 之间那个点。
+            断言：第一个点的位置必须是下标 1，也就是 "0.3.0" 里 0 和 1 之间那个点。
             这条检查能抓到"版本号写成 010"这类低级错误。
             std::size_t{1} 显式写出类型，避免和 int 比较时的类型转换警告。
 
@@ -795,7 +795,7 @@ bin/
   1. 操作系统加载 bin/ordo.exe
   2. 进入 main()，argc = 2，argv[0] = 程序路径，argv[1] = "--version"
   3. 循环从 i = 1 开始，arg = "--version"
-  4. 命中第 27 行的判断，打印 "ordo 0.2.0"
+  4. 命中第 27 行的判断，打印 "ordo 0.3.0"
   5. return 0，操作系统收到退出码 0
 
 【场景 C：测试】
@@ -1168,7 +1168,7 @@ tests/test_task_service.cpp    假仓库驱动的 id 分配、拒绝路径、过
   mingw32-make           同时产出 bin/ordo.exe 与 bin/ordo-gui.exe
   mingw32-make gui       只构建 GUI
   mingw32-make run-gui   构建并启动 GUI
-  mingw32-make test      49 个用例（M1.5 阶段；M2 后为 86）
+  mingw32-make test      49 个用例（M1.5 阶段；M2 后为 86，M3 后为 117）
 
   已实测的交互：新增（中文标题、日期选择）、回车保存、选中行、
   标记完成、按状态筛选、编辑对话框预填。
@@ -1412,7 +1412,7 @@ GUI（src/gui/）：
 10.10  测试与验证
 --------------------------------------------------------------------------------
 
-  mingw32-make test      86 个用例
+  mingw32-make test      86 个用例（M3 后为 117）
   mingw32-make           编译 CLI 与 GUI
 
 新增测试：
@@ -1426,6 +1426,155 @@ GUI（src/gui/）：
   - GUI 列表显示类型；
   - 今日计划显示活动固定时段、课程作业拆分与未排告警；
   - 添加对话框选择"活动"后标签变为"开始时间"。
+
+================================================================================
+                  第十一部分  M3 长期能力：日志、统计与复习
+================================================================================
+
+11.1  一句话
+--------------------------------------------------------------------------------
+
+M3 让程序从"今天怎么排"变成"这周做得怎么样、下次什么时候复习"：
+
+  - 写操作追加到 data/log.csv；
+  - stats week 从日志算最近 7 天完成率与投入分布；
+  - 复习类任务用 SM-2 计算下一次间隔。
+
+设计依据是 docs/adr/0004-tracking.md；本部分只讲代码怎么读。
+
+11.2  新增文件
+--------------------------------------------------------------------------------
+
+  include/ordo/io/event_log.h
+  src/io/event_log.cpp
+      LogEntry、IEventLog、CsvEventLog。
+      append()：文件不存在/为空时先写表头，然后追加一行；
+      read()：逐行解析，字段数/时间/数字错误整表拒绝。
+      注意：app 模式下 tellp 不可靠，是否写表头用 file_size 判断。
+
+  include/ordo/algo/sm2.h
+  src/algo/sm2.cpp
+      Sm2State { stage, ease, interval_days }；
+      sm2_update(current, quality) → Result<Sm2State>；
+      review_due(task, now) / review_days_until_due(task, now)。
+      纯函数：不读时钟、不碰文件。
+
+  include/ordo/cli/commands/stats_cmd.h
+  src/cli/commands/stats_cmd.cpp
+      stats.week：打印窗口、完成率、按类型的投入分布。
+
+  tests/test_event_log.cpp
+  tests/test_sm2.cpp
+      日志往返/损坏文件；SM-2 间隔序列、重置、上下限、到期边界。
+
+没有新增 app 服务文件：评分、到期列表、周统计都加在 TaskService 上。
+
+11.3  Task 与 CSV：从 10 列到 13 列
+--------------------------------------------------------------------------------
+
+core/task.h 新增三个字段：
+
+  double ease_factor{2.5};     // 难度系数
+  int    interval_days{0};     // 当前间隔
+  std::optional<TimePoint> last_review;  // 上次复习时刻
+
+tasks.csv 行尾追加 ease_factor,interval_days,last_review。
+file_repository.cpp 同时识别三代表头：
+
+  8 列（M1）   → kind=other，复习字段默认
+  10 列（M2）  → 复习字段默认
+  13 列（M3）  → 正常读取
+
+保存时统一写 13 列，旧文件第一次写入即迁移。
+ease 用两位小数写盘；读取用 from_chars(fixed) 解析，失败整表拒绝。
+
+11.4  SM-2 规则（algo/sm2.cpp）
+--------------------------------------------------------------------------------
+
+质量 q 取 0..5：
+
+  ease' = clamp(ease + 0.1 - (5-q)*(0.08 + (5-q)*0.02), 1.3, 5.0)
+
+  q < 3   → stage=0，interval=1（明天再来）
+  q >= 3  → stage 0/1 分别用 1 天、6 天；
+            之后 interval = round(旧 interval * 旧 ease)，上限 365 天；
+            stage += 1
+
+到期判断：
+
+  从未复习                       → 到期
+  now >= last_review + interval  → 到期
+
+评分成功后 TaskService 会把 state 改回 todo：
+复习完的任务要重新出现，而不是因为"已完成"永远消失。
+
+11.5  日志与周统计
+--------------------------------------------------------------------------------
+
+TaskService 的写操作在保存成功后调用 log_event：
+
+  task.add / task.edit / task.done / task.remove / task.review
+
+只读命令（list / plan / stats）不写日志。
+日志写入失败只返回 Status，不上抛：任务已经保存成功，日志是旁路审计。
+
+weekly_stats 的窗口是 [今天 00:00 - 6 天, now]：
+
+  完成数   = 窗口内 task.done 的不同 task_id
+  应完成数 = 完成数 ∪（当前未完成且 deadline 在窗口内的任务）
+  投入     = 窗口内日志 minutes 之和，按任务当前 kind 分组；
+             任务已删除则归入 other
+
+启用日志之前的历史不会补算，这是"从今天开始记录"的正常代价。
+
+11.6  一条复习命令的完整调用链
+--------------------------------------------------------------------------------
+
+  ./bin/ordo task review 1 --quality 4 --spent 30
+
+    src/main.cpp
+      → 构造 CsvTaskRepository、CsvEventLog、AppContext
+      → Dispatcher 找到 task.review
+    TaskReviewCommand::execute
+      → TaskService::grade_review(1, 4, now, 30)
+        → repo.find(1)                  取任务
+        → sm2_update(...)               纯函数算新 stage/ease/interval
+        → repo.upsert(task)             落盘 tasks.csv
+        → CsvEventLog::append           追加 log.csv（失败不阻断）
+      → 打印"下次 N 天后"
+
+GUI 走同一条服务链：AppModel::grade_review → TaskService::grade_review，
+所以 log.csv 不区分操作来自 CLI 还是窗口。
+
+11.7  GUI 变化
+--------------------------------------------------------------------------------
+
+  - 列表新增"复习"列，显示 未复习 / 到期 / N 天后；
+  - 工具栏新增"复习评分"，弹出一个模态小窗口：
+      质量 ComboBox 0..5 + 本次投入（可空）+ 保存/取消；
+    没有单独的 GUI 文件，窗口过程在 main_window.cpp 里；
+  - 右侧统计区在原有计数下面追加"本周"完成率与投入分布；
+  - main_gui.cpp 构造 CsvEventLog(data/log.csv)，与 CLI 同一份日志。
+
+11.8  测试与验证
+--------------------------------------------------------------------------------
+
+  mingw32-make test      117 个用例
+  mingw32-make           编译 CLI 与 GUI
+
+新增测试：
+  tests/test_sm2.cpp           首次 1 天、第二次 6 天、ease 缩放、失败重置、
+                               ease 下限、间隔上限、到期与剩余天数
+  tests/test_event_log.cpp     追加建表头、多次追加不重复表头、转义、损坏文件、
+                              负分钟数
+  tests/test_task_service.cpp  写操作日志、评分重开、到期过滤、周统计口径
+  tests/test_file_repository.cpp  复习字段往返、10→13 列迁移、非法 ease
+  tests/test_app_model.cpp     复习状态列、评分后"1 天后"、周统计视图映射
+
+已实测的交互：
+  - task review 列出到期 → 评分 → 列表显示"1 天后复习"；
+  - task done --spent 与 task review --spent 都进入 log.csv；
+  - stats week 输出"完成 1 / 应完成 1（100%）"与按类型投入。
 
 ================================================================================
                                   文件结束

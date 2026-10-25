@@ -108,6 +108,27 @@ std::optional<TimePoint> parse_datetime(std::string_view text) {
     return Clock::from_time_t(seconds);
 }
 
+std::optional<TimePoint> parse_datetime_seconds(std::string_view text) {
+    text = trim(text);
+    if (text.size() != 19 || !has_separator(text, 16, ':')) {
+        return std::nullopt;
+    }
+    const std::string_view seconds_text = text.substr(17, 2);
+    if (!all_digits(seconds_text)) {
+        return std::nullopt;
+    }
+    const int seconds = digits_to_int(seconds_text);
+    if (seconds > 59) {
+        return std::nullopt;
+    }
+    // 日期与分钟部分复用 parse_datetime，秒只做加法；这样闰日与归一化检查只有一份。
+    const std::optional<TimePoint> minute_precision = parse_datetime(text.substr(0, 16));
+    if (!minute_precision.has_value()) {
+        return std::nullopt;
+    }
+    return *minute_precision + std::chrono::seconds(seconds);
+}
+
 namespace {
 
 std::tm to_local(TimePoint point) {
@@ -126,6 +147,15 @@ std::string format_datetime(TimePoint point) {
     char buffer[32] = {};
     std::snprintf(buffer, sizeof(buffer), "%04d-%02d-%02d %02d:%02d", local.tm_year + 1900,
                   local.tm_mon + 1, local.tm_mday, local.tm_hour, local.tm_min);
+    return buffer;
+}
+
+std::string format_datetime_seconds(TimePoint point) {
+    const std::tm local = to_local(point);
+    char buffer[32] = {};
+    std::snprintf(buffer, sizeof(buffer), "%04d-%02d-%02d %02d:%02d:%02d",
+                  local.tm_year + 1900, local.tm_mon + 1, local.tm_mday, local.tm_hour,
+                  local.tm_min, local.tm_sec);
     return buffer;
 }
 

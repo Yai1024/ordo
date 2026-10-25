@@ -3,6 +3,8 @@
 #include <commctrl.h>
 
 #include <algorithm>
+#include <cstdlib>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -37,6 +39,7 @@ enum ControlId : int {
     kSubtitle = 2013,
     kPlanHeading = 2014,
     kStatsHeading = 2015,
+    kReviewButton = 2016,
 };
 
 const wchar_t* kClassName = L"OrdoMainWindow";
@@ -59,11 +62,186 @@ void show_error(HWND parent, const Status& status) {
     MessageBoxW(parent, to_wide(status.message).c_str(), L"Ordo", MB_OK | MB_ICONERROR);
 }
 
+// 复习评分模态框：质量 0–5 + 可选投入分钟。复用主窗口字体，不新增 GUI 文件。
+struct ReviewDialogState {
+    HWND quality_combo{};
+    HWND spent_edit{};
+    int quality{4};
+    std::optional<Minutes> spent;
+    bool accepted{false};
+};
+
+LRESULT CALLBACK review_dialog_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
+    auto* state =
+        reinterpret_cast<ReviewDialogState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+
+    switch (message) {
+        case WM_COMMAND:
+            if (state == nullptr) {
+                break;
+            }
+            if (LOWORD(wparam) == IDOK) {
+                const LRESULT selection =
+                    SendMessageW(state->quality_combo, CB_GETCURSEL, 0, 0);
+                state->quality = selection == CB_ERR ? 4 : static_cast<int>(selection);
+
+                wchar_t buffer[32] = {};
+                GetWindowTextW(state->spent_edit, buffer, 32);
+                if (buffer[0] != L'\0') {
+                    wchar_t* end = nullptr;
+                    const long value = wcstol(buffer, &end, 10);
+                    if (end == buffer || *end != L'\0' || value < 0 || value > 600) {
+                        MessageBoxW(hwnd, L"本次投入必须是 0 到 600 的整数分钟。", L"Ordo",
+                                    MB_OK | MB_ICONWARNING);
+                        return 0;
+                    }
+                    state->spent = static_cast<Minutes>(value);
+                }
+
+                state->accepted = true;
+                DestroyWindow(hwnd);
+                return 0;
+            }
+            if (LOWORD(wparam) == IDCANCEL) {
+                DestroyWindow(hwnd);
+                return 0;
+            }
+            break;
+
+        case WM_CLOSE:
+            DestroyWindow(hwnd);
+            return 0;
+
+        default:
+            break;
+    }
+    return DefWindowProcW(hwnd, message, wparam, lparam);
+}
+
+bool prompt_review(HWND parent, HINSTANCE instance, HFONT font, int dpi,
+                   ReviewDialogState& state) {
+    constexpr const wchar_t* kClass = L"OrdoReviewDialog";
+    WNDCLASSEXW window_class{};
+    window_class.cbSize = sizeof(window_class);
+    window_class.lpfnWndProc = review_dialog_proc;
+    window_class.hInstance = instance;
+    window_class.lpszClassName = kClass;
+    window_class.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    window_class.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
+    if (RegisterClassExW(&window_class) == 0 && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+        return false;
+    }
+
+    const auto s = [dpi](int value) { return scale_for_dpi(dpi, value); };
+    RECT parent_rect{};
+    GetWindowRect(parent, &parent_rect);
+    const int width = s(360);
+    const int height = s(230);
+    const int x = parent_rect.left + (parent_rect.right - parent_rect.left - width) / 2;
+    const int y = parent_rect.top + (parent_rect.bottom - parent_rect.top - height) / 2;
+
+    // WS_EX_CONTROLPARENT 让 IsDialogMessageW 在自定义窗口里也能做 Tab 导航。
+    HWND dialog = CreateWindowExW(WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT, kClass,
+                                  L"复习评分", WS_POPUP | WS_CAPTION | WS_SYSMENU, x, y,
+                                  width, height, parent, nullptr, instance, nullptr);
+    if (dialog == nullptr) {
+        return false;
+    }
+
+    auto add_label = [&](const wchar_t* text, int top) {
+        HWND control = CreateWindowExW(0, L"STATIC", text, WS_CHILD | WS_VISIBLE | SS_LEFT,
+                                       s(20), s(top), s(320), s(20), dialog, nullptr, instance,
+                                       nullptr);
+        SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+    };
+
+    add_label(L"复习质量（0 忘记 … 5 毫不费力）", 18);
+    state.quality_combo = CreateWindowExW(
+        0, L"COMBOBOX", L"",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL, s(20), s(42),
+        s(300), s(200), dialog,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(1002)), instance, nullptr);
+    SendMessageW(state.quality_combo, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+    const wchar_t* qualities[] = {L"0 完全忘记", L"1 几乎忘记",   L"2 勉强想起",
+                                  L"3 有印象",   L"4 基本记得", L"5 毫不费力"};
+    for (const wchar_t* quality : qualities) {
+        SendMessageW(state.quality_combo, CB_ADDSTRING, 0,
+                     reinterpret_cast<LPARAM>(quality));
+    }
+    SendMessageW(state.quality_combo, CB_SETCURSEL, 4, 0);
+
+    add_label(L"本次投入（分钟，可空）", 84);
+    state.spent_edit = CreateWindowExW(
+        WS_EX_CLIENTEDGE, L"EDIT", L"",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_NUMBER, s(20), s(108), s(120), s(26), dialog,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(1004)), instance, nullptr);
+    SendMessageW(state.spent_edit, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+
+    HWND cancel = CreateWindowExW(0, L"BUTTON", L"取消",
+                                  WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, s(200),
+                                  s(160), s(64), s(30), dialog,
+                                  reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDCANCEL)),
+                                  instance, nullptr);
+    HWND save = CreateWindowExW(0, L"BUTTON", L"保存",
+                                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON, s(272),
+                                s(160), s(64), s(30), dialog,
+                                reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDOK)), instance,
+                                nullptr);
+    SendMessageW(cancel, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+    SendMessageW(save, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+
+    SetWindowLongPtrW(dialog, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(&state));
+    EnableWindow(parent, FALSE);
+    ShowWindow(dialog, SW_SHOW);
+    UpdateWindow(dialog);
+    SetFocus(state.quality_combo);
+
+    MSG message{};
+    while (IsWindow(dialog)) {
+        if (GetMessageW(&message, nullptr, 0, 0) <= 0) {
+            break;
+        }
+
+        // 与 task_dialog 相同：自定义窗口显式处理 Tab / Enter / Esc。
+        if (message.message == WM_KEYDOWN &&
+            (message.hwnd == dialog || IsChild(dialog, message.hwnd))) {
+            if (message.wParam == VK_TAB) {
+                const bool backwards = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+                HWND next = GetNextDlgTabItem(dialog, GetFocus(), backwards);
+                if (next != nullptr) {
+                    SetFocus(next);
+                }
+                continue;
+            }
+            if (message.wParam == VK_RETURN) {
+                SendMessageW(dialog, WM_COMMAND, MAKEWPARAM(IDOK, BN_CLICKED), 0);
+                continue;
+            }
+            if (message.wParam == VK_ESCAPE) {
+                DestroyWindow(dialog);
+                continue;
+            }
+        }
+
+        if (IsDialogMessageW(dialog, &message) == 0) {
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+    }
+
+    if (IsWindow(dialog)) {
+        DestroyWindow(dialog);
+    }
+    EnableWindow(parent, TRUE);
+    SetActiveWindow(parent);
+    return state.accepted;
+}
+
 }  // namespace
 
-MainWindow::MainWindow(ITaskRepository& repo, ScheduleConfig config)
+MainWindow::MainWindow(ITaskRepository& repo, ScheduleConfig config, IEventLog* log)
     : background_(CreateSolidBrush(kBackground)),
-      model_(repo, [] { return Clock::now(); }, config) {}
+      model_(repo, [] { return Clock::now(); }, config, log) {}
 
 MainWindow::~MainWindow() {
     if (font_ != nullptr) {
@@ -176,6 +354,9 @@ LRESULT MainWindow::handle(UINT message, WPARAM wparam, LPARAM lparam) {
                     case kDoneButton:
                         on_done();
                         return 0;
+                    case kReviewButton:
+                        on_review();
+                        return 0;
                     case kRemoveButton:
                         on_remove();
                         return 0;
@@ -267,6 +448,7 @@ void MainWindow::create_children() {
     add_button_ = add_button(kAddButton, L"添加任务");
     edit_button_ = add_button(kEditButton, L"编辑");
     done_button_ = add_button(kDoneButton, L"标记完成");
+    review_button_ = add_button(kReviewButton, L"复习评分");
     remove_button_ = add_button(kRemoveButton, L"删除");
     refresh_button_ = add_button(kRefreshButton, L"刷新");
 
@@ -315,6 +497,7 @@ void MainWindow::create_children() {
         {L"类型", 76, LVCFMT_LEFT},      {L"课程", 90, LVCFMT_LEFT},
         {L"重要度", 70, LVCFMT_CENTER},  {L"预估(分)", 80, LVCFMT_RIGHT},
         {L"截止时间", 130, LVCFMT_LEFT}, {L"状态", 80, LVCFMT_LEFT},
+        {L"复习", 90, LVCFMT_LEFT},
     };
     for (int i = 0; i < static_cast<int>(sizeof(columns) / sizeof(columns[0])); ++i) {
         LVCOLUMNW column{};
@@ -374,6 +557,8 @@ void MainWindow::layout() {
     x += s(72) + gap;
     MoveWindow(done_button_, x, toolbar_y, s(88), button_height, TRUE);
     x += s(88) + gap;
+    MoveWindow(review_button_, x, toolbar_y, s(88), button_height, TRUE);
+    x += s(88) + gap;
     MoveWindow(remove_button_, x, toolbar_y, s(72), button_height, TRUE);
     x += s(72) + s(24);
 
@@ -389,12 +574,12 @@ void MainWindow::layout() {
 
     // 列表
     MoveWindow(list_, pad, content_top, list_width, content_height, TRUE);
-    const int fixed_width = s(56 + 76 + 90 + 70 + 80 + 130 + 80);
+    const int fixed_width = s(56 + 76 + 90 + 70 + 80 + 130 + 80 + 90);
     ListView_SetColumnWidth(list_, 1, std::max(s(160), list_width - fixed_width - s(24)));
 
     // 右侧面板：计划区可滚动，统计区放在它下面。
     const int panel_x = pad + list_width + pad;
-    const int plan_height = s(250);
+    const int plan_height = s(220);
     MoveWindow(GetDlgItem(hwnd_, kPlanHeading), panel_x, content_top, panel_width, s(24), TRUE);
     MoveWindow(plan_text_, panel_x, content_top + s(32), panel_width, plan_height, TRUE);
 
@@ -437,6 +622,7 @@ void MainWindow::refresh() {
         const std::wstring estimate = std::to_wstring(row.estimate);
         const std::wstring deadline = to_wide(row.deadline_text);
         const std::wstring state = state_text(row.state);
+        const std::wstring review = to_wide(row.review_text);
 
         LVITEMW item{};
         item.mask = LVIF_TEXT | LVIF_PARAM;
@@ -452,6 +638,7 @@ void MainWindow::refresh() {
         ListView_SetItemText(list_, index, 5, const_cast<wchar_t*>(estimate.c_str()));
         ListView_SetItemText(list_, index, 6, const_cast<wchar_t*>(deadline.c_str()));
         ListView_SetItemText(list_, index, 7, const_cast<wchar_t*>(state.c_str()));
+        ListView_SetItemText(list_, index, 8, const_cast<wchar_t*>(review.c_str()));
         ++index;
     }
 
@@ -478,7 +665,27 @@ void MainWindow::update_stats() {
     text += L"进行中　　　" + std::to_wstring(value.doing) + L"\n";
     text += L"已完成　　　" + std::to_wstring(value.done) + L"\n";
     text += L"超期　　　　" + std::to_wstring(value.overdue) + L"\n";
-    text += L"预估总时长　" + std::to_wstring(value.open_estimate) + L" 分钟";
+    text += L"预估总时长　" + std::to_wstring(value.open_estimate) + L" 分钟\n";
+
+    auto weekly = model_.weekly_stats();
+    if (!weekly.has_value()) {
+        text += L"\n本周统计读取失败";
+    } else {
+        const WeeklyStatsView& view = weekly.value();
+        text += L"\n本周 " + to_wide(view.window_text) + L"\n";
+        if (view.has_rate) {
+            text += L"完成 " + std::to_wstring(view.completed) + L" / " +
+                    std::to_wstring(view.expected) + L"（" +
+                    std::to_wstring(view.completion_percent) + L"%）\n";
+        } else {
+            text += L"完成率 --\n";
+        }
+        text += L"投入 " + std::to_wstring(view.total_minutes) + L" 分钟\n";
+        for (const KindMinutesRow& row : view.by_kind) {
+            text += L"  " + to_wide(row.kind_label) + L" " + std::to_wstring(row.minutes) +
+                    L" 分钟\n";
+        }
+    }
     SetWindowTextW(stats_text_, text.c_str());
 }
 
@@ -519,6 +726,7 @@ void MainWindow::update_buttons() {
     const bool has_selection = selected_id() != 0;
     EnableWindow(edit_button_, has_selection);
     EnableWindow(done_button_, has_selection);
+    EnableWindow(review_button_, has_selection);
     EnableWindow(remove_button_, has_selection);
 }
 
@@ -612,6 +820,42 @@ void MainWindow::on_done() {
 
     refresh();
     set_status(L"任务 #" + std::to_wstring(id) + L" 已标记完成");
+}
+
+void MainWindow::on_review() {
+    const TaskId id = selected_id();
+    if (id == 0) {
+        return;
+    }
+
+    auto form = model_.form_for(id);
+    if (!form.has_value()) {
+        show_error(hwnd_, form.status());
+        return;
+    }
+    if (form.value().kind != "review") {
+        MessageBoxW(hwnd_, L"只有“复习考试”类任务可以评分。", L"Ordo",
+                    MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+
+    ReviewDialogState state;
+    if (!prompt_review(hwnd_, instance_, font_, dpi_, state)) {
+        return;
+    }
+
+    auto graded = model_.grade_review(id, state.quality, state.spent);
+    if (!graded.has_value()) {
+        show_error(hwnd_, graded.status());
+        return;
+    }
+
+    refresh();
+    std::wstring message = L"任务 #" + std::to_wstring(id) + L" 已复习";
+    if (!graded.value().review_text.empty()) {
+        message += L"，下次 " + to_wide(graded.value().review_text);
+    }
+    set_status(message);
 }
 
 void MainWindow::on_remove() {

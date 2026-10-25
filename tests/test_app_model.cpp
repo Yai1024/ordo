@@ -56,8 +56,22 @@ public:
     }
 };
 
-ordo::AppModel make_model(FakeRepo& repo) {
-    return ordo::AppModel(repo, [] { return kNow; });
+class FakeLog final : public ordo::IEventLog {
+public:
+    std::vector<ordo::LogEntry> entries;
+
+    ordo::Status append(const ordo::LogEntry& entry) override {
+        entries.push_back(entry);
+        return ordo::Status::success();
+    }
+
+    ordo::Result<std::vector<ordo::LogEntry>> read() const override {
+        return ordo::Result<std::vector<ordo::LogEntry>>::ok(entries);
+    }
+};
+
+ordo::AppModel make_model(FakeRepo& repo, ordo::IEventLog* log = nullptr) {
+    return ordo::AppModel(repo, [] { return kNow; }, ordo::ScheduleConfig{}, log);
 }
 
 ordo::TaskForm make_form(const std::string& title = "高数作业") {
@@ -196,6 +210,9 @@ ORDO_TEST(app_model_update_preserves_review_fields) {
     ORDO_CHECK(created.has_value());
 
     repo.tasks[0].review_stage = 3;
+    repo.tasks[0].ease_factor = 2.36;
+    repo.tasks[0].interval_days = 16;
+    repo.tasks[0].last_review = ordo::add_minutes(kNow, -120);
 
     ordo::TaskForm form = make_form("新标题");
     form.importance = "5";
@@ -205,6 +222,9 @@ ORDO_TEST(app_model_update_preserves_review_fields) {
     ORDO_CHECK_EQ(repo.tasks[0].title, std::string{"新标题"});
     ORDO_CHECK_EQ(repo.tasks[0].importance, 5);
     ORDO_CHECK_EQ(repo.tasks[0].review_stage, 3);
+    ORDO_CHECK_EQ(repo.tasks[0].ease_factor, 2.36);
+    ORDO_CHECK_EQ(repo.tasks[0].interval_days, 16);
+    ORDO_CHECK(repo.tasks[0].last_review.has_value());
 }
 
 ORDO_TEST(app_model_set_state_keeps_other_fields) {
@@ -315,4 +335,42 @@ ORDO_TEST(app_model_stats_reflects_repository) {
     ORDO_CHECK_EQ(stats.value().total, std::size_t{2});
     ORDO_CHECK_EQ(stats.value().done, std::size_t{1});
     ORDO_CHECK_EQ(stats.value().open_estimate, ordo::Minutes{90});
+}
+
+ORDO_TEST(app_model_review_status_and_weekly_stats) {
+    FakeRepo repo;
+    FakeLog log;
+    ordo::AppModel model = make_model(repo, &log);
+
+    ordo::TaskForm form = make_form("线性代数复习");
+    form.kind = "review";
+    form.estimate = "45";
+    const auto created = model.create(form);
+    ORDO_CHECK(created.has_value());
+
+    const auto rows = model.list(ordo::ListQuery{});
+    ORDO_CHECK(rows.has_value());
+    ORDO_CHECK_EQ(rows.value().size(), std::size_t{1});
+    ORDO_CHECK_EQ(rows.value()[0].review_text, std::string{"未复习"});
+
+    const auto due_before = model.due_reviews();
+    ORDO_CHECK(due_before.has_value());
+    ORDO_CHECK_EQ(due_before.value().size(), std::size_t{1});
+
+    const auto graded = model.grade_review(created.value(), 4, ordo::Minutes{30});
+    ORDO_CHECK(graded.has_value());
+    ORDO_CHECK(graded.value().state == ordo::TaskState::Todo);
+    ORDO_CHECK_EQ(graded.value().review_text, std::string{"1 天后"});
+
+    const auto due_after = model.due_reviews();
+    ORDO_CHECK(due_after.has_value());
+    ORDO_CHECK(due_after.value().empty());
+
+    const auto weekly = model.weekly_stats();
+    ORDO_CHECK(weekly.has_value());
+    ORDO_CHECK_EQ(weekly.value().total_minutes, ordo::Minutes{30});
+    ORDO_CHECK_EQ(weekly.value().by_kind.size(), std::size_t{1});
+    ORDO_CHECK_EQ(weekly.value().by_kind[0].kind_label, std::string{"复习考试"});
+    ORDO_CHECK_EQ(weekly.value().by_kind[0].percent, 100);
+    ORDO_CHECK(!weekly.value().window_text.empty());
 }

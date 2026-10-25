@@ -4,10 +4,13 @@
 #include <limits>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
+#include <vector>
 
 #include "ordo/algo/edf.h"
 #include "ordo/algo/priority.h"
+#include "ordo/algo/sm2.h"
 
 namespace ordo {
 namespace {
@@ -17,9 +20,30 @@ Result<T> forward_failure(const Status& status) {
     return Result<T>::fail(status.code, status.message);
 }
 
+TimePoint start_of_today(TimePoint now) {
+    const std::string date = format_date(now);
+    const std::optional<TimePoint> parsed = parse_datetime(date + " 00:00");
+    return parsed.value_or(now);
+}
+
 }  // namespace
 
-TaskService::TaskService(ITaskRepository& repo) : repo_(repo) {}
+TaskService::TaskService(ITaskRepository& repo, IEventLog* log) : repo_(repo), log_(log) {}
+
+void TaskService::log_event(TimePoint when, std::string_view command, TaskId id,
+                            std::optional<Minutes> minutes, std::string_view note) const {
+    if (log_ == nullptr) {
+        return;
+    }
+    LogEntry entry;
+    entry.timestamp = when;
+    entry.command = std::string{command};
+    entry.task_id = id;
+    entry.minutes = minutes;
+    entry.note = std::string{note};
+    // 旁路审计：日志写不进去不阻断业务（ADR-0004 决策 6）。
+    (void)log_->append(entry);
+}
 
 Result<Task> TaskService::add(Task draft) {
     auto loaded = repo_.load_all();
@@ -59,6 +83,7 @@ Result<Task> TaskService::add(Task draft) {
         return Result<Task>::fail(saved.code, saved.message);
     }
 
+    log_event(Clock::now(), "task.add", draft.id, std::nullopt, draft.title);
     return Result<Task>::ok(std::move(draft));
 }
 
@@ -86,11 +111,53 @@ Status TaskService::update(TaskId id, const Task& patch) {
     }
 
     *position = patch;
-    return repo_.save_all(tasks);
+    const Status saved = repo_.save_all(tasks);
+    if (!saved.ok()) {
+        return saved;
+    }
+    log_event(Clock::now(), "task.edit", id, std::nullopt, patch.title);
+    return Status::success();
+}
+
+Status TaskService::set_state(TaskId id, TaskState state, std::optional<Minutes> spent) {
+    auto found = repo_.find(id);
+    if (!found.has_value()) {
+        return found.status();
+    }
+
+    Task task = std::move(found.value());
+    if (task.state == state) {
+        return Status::success();  // 无变化不写日志
+    }
+
+    task.state = state;
+    const Status check = task.validate();
+    if (!check.ok()) {
+        return check;
+    }
+    const Status saved = repo_.upsert(task);
+    if (!saved.ok()) {
+        return saved;
+    }
+
+    const bool done = state == TaskState::Done;
+    log_event(Clock::now(), done ? "task.done" : "task.edit", id,
+              done ? spent : std::nullopt, task.title);
+    return Status::success();
 }
 
 Status TaskService::remove(TaskId id) {
-    return repo_.erase(id);
+    auto found = repo_.find(id);
+    if (!found.has_value()) {
+        return found.status();
+    }
+
+    const Status erased = repo_.erase(id);
+    if (!erased.ok()) {
+        return erased;
+    }
+    log_event(Clock::now(), "task.remove", id, std::nullopt, found.value().title);
+    return Status::success();
 }
 
 Result<Task> TaskService::get(TaskId id) const {
@@ -178,6 +245,152 @@ Result<Stats> TaskService::stats(TimePoint now) const {
     }
 
     return Result<Stats>::ok(stats);
+}
+
+Result<Task> TaskService::grade_review(TaskId id, int quality, TimePoint now,
+                                       std::optional<Minutes> spent) {
+    auto found = repo_.find(id);
+    if (!found.has_value()) {
+        return forward_failure<Task>(found.status());
+    }
+
+    Task task = std::move(found.value());
+    if (task.kind != TaskKind::Review) {
+        return Result<Task>::fail(ErrorCode::InvalidValue,
+                                  "任务 #" + std::to_string(id) + " 不是复习类，不能评分");
+    }
+
+    const Result<Sm2State> next =
+        sm2_update(Sm2State{task.review_stage, task.ease_factor, task.interval_days}, quality);
+    if (!next.has_value()) {
+        return forward_failure<Task>(next.status());
+    }
+
+    task.review_stage = next.value().stage;
+    task.ease_factor = next.value().ease;
+    task.interval_days = next.value().interval_days;
+    task.last_review = now;
+    // 复习一次后重新打开，等待下一个间隔；否则完成任务会永远从列表消失。
+    task.state = TaskState::Todo;
+
+    const Status saved = repo_.upsert(task);
+    if (!saved.ok()) {
+        return Result<Task>::fail(saved.code, saved.message);
+    }
+
+    log_event(now, "task.review", id, spent, "quality=" + std::to_string(quality));
+    return Result<Task>::ok(std::move(task));
+}
+
+Result<std::vector<Task>> TaskService::due_reviews(TimePoint now) const {
+    auto loaded = repo_.load_all();
+    if (!loaded.has_value()) {
+        return forward_failure<std::vector<Task>>(loaded.status());
+    }
+
+    std::vector<Task> due;
+    for (const Task& task : loaded.value()) {
+        if (is_open(task.state) && review_due(task, now)) {
+            due.push_back(task);
+        }
+    }
+
+    const auto due_time = [](const Task& task) {
+        if (!task.last_review.has_value()) {
+            return TimePoint::min();
+        }
+        return add_minutes(*task.last_review, task.interval_days * kMinutesPerDay);
+    };
+    std::sort(due.begin(), due.end(), [&due_time](const Task& left, const Task& right) {
+        const TimePoint left_time = due_time(left);
+        const TimePoint right_time = due_time(right);
+        if (left_time != right_time) {
+            return left_time < right_time;
+        }
+        return left.id < right.id;
+    });
+
+    return Result<std::vector<Task>>::ok(std::move(due));
+}
+
+Result<WeeklyStats> TaskService::weekly_stats(TimePoint now) const {
+    auto loaded = repo_.load_all();
+    if (!loaded.has_value()) {
+        return forward_failure<WeeklyStats>(loaded.status());
+    }
+
+    WeeklyStats stats;
+    stats.window_end = now;
+    stats.window_begin = add_minutes(start_of_today(now), -6 * kMinutesPerDay);
+
+    std::unordered_map<TaskId, TaskKind> kinds;
+    kinds.reserve(loaded.value().size());
+    std::unordered_set<TaskId> due_open_ids;
+    for (const Task& task : loaded.value()) {
+        kinds.emplace(task.id, task.kind);
+        if (is_open(task.state) && task.deadline >= stats.window_begin &&
+            task.deadline <= stats.window_end) {
+            due_open_ids.insert(task.id);
+        }
+    }
+
+    if (log_ == nullptr) {
+        stats.expected = due_open_ids.size();
+        stats.has_rate = stats.expected > 0;
+        return Result<WeeklyStats>::ok(std::move(stats));
+    }
+
+    auto entries = log_->read();
+    if (!entries.has_value()) {
+        return forward_failure<WeeklyStats>(entries.status());
+    }
+
+    std::unordered_set<TaskId> completed_ids;
+    std::unordered_map<int, Minutes> minutes_by_kind;
+    for (const LogEntry& entry : entries.value()) {
+        if (entry.timestamp < stats.window_begin || entry.timestamp > stats.window_end) {
+            continue;
+        }
+
+        if (entry.command == "task.done" && entry.task_id.has_value()) {
+            completed_ids.insert(*entry.task_id);
+        }
+
+        if (entry.minutes.has_value() && *entry.minutes > 0) {
+            const auto found =
+                entry.task_id.has_value() ? kinds.find(*entry.task_id) : kinds.end();
+            const TaskKind kind =
+                found == kinds.end() ? TaskKind::Other : found->second;
+            minutes_by_kind[static_cast<int>(kind)] += *entry.minutes;
+        }
+    }
+
+    stats.completed = completed_ids.size();
+    stats.expected = completed_ids.size();
+    for (const TaskId id : due_open_ids) {
+        if (completed_ids.find(id) == completed_ids.end()) {
+            ++stats.expected;
+        }
+    }
+    stats.has_rate = stats.expected > 0;
+    if (stats.has_rate) {
+        stats.completion_percent =
+            static_cast<int>(stats.completed * 100 / stats.expected);
+    }
+
+    for (const auto& [kind, minutes] : minutes_by_kind) {
+        stats.total_minutes += minutes;
+        stats.by_kind.push_back(KindMinutes{static_cast<TaskKind>(kind), minutes});
+    }
+    std::sort(stats.by_kind.begin(), stats.by_kind.end(),
+              [](const KindMinutes& left, const KindMinutes& right) {
+                  if (left.minutes != right.minutes) {
+                      return left.minutes > right.minutes;
+                  }
+                  return static_cast<int>(left.kind) < static_cast<int>(right.kind);
+              });
+
+    return Result<WeeklyStats>::ok(std::move(stats));
 }
 
 }  // namespace ordo

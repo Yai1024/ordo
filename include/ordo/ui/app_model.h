@@ -6,6 +6,7 @@
 //   - 不出现 HWND、wchar_t、窗口消息、控件句柄；
 //   - 业务规则仍由 app::TaskService 负责，本层只做表单解析与展示映射。
 
+#include <cstddef>
 #include <functional>
 #include <optional>
 #include <string>
@@ -16,6 +17,7 @@
 #include "ordo/core/task.h"
 #include "ordo/core/types.h"
 #include "ordo/io/config.h"
+#include "ordo/io/event_log.h"
 #include "ordo/io/repository.h"
 
 namespace ordo {
@@ -36,6 +38,7 @@ struct TaskRow {
     Minutes estimate{0};
     std::string deadline_text;  // YYYY-MM-DD HH:MM
     TaskState state{TaskState::Todo};
+    std::string review_text;    // 复习任务：未复习 / 到期 / N 天后；其余为空
 };
 
 // 新增/编辑表单的原始输入。解析与校验在本层完成，GUI 不写业务判断。
@@ -64,10 +67,27 @@ struct PlanView {
     Minutes total_assigned{0};          // 已排入时间块的总时长
 };
 
+// 周统计的一行：类型、投入分钟、占比（向下取整）。
+struct KindMinutesRow {
+    std::string kind_label;
+    Minutes minutes{0};
+    int percent{0};
+};
+
+struct WeeklyStatsView {
+    std::string window_text;  // "2026-10-19 ~ 2026-10-25"
+    std::size_t completed{0};
+    std::size_t expected{0};
+    bool has_rate{false};
+    int completion_percent{0};
+    Minutes total_minutes{0};
+    std::vector<KindMinutesRow> by_kind;
+};
+
 class AppModel {
 public:
     AppModel(ITaskRepository& repo, std::function<TimePoint()> clock,
-             ScheduleConfig config = ScheduleConfig{});
+             ScheduleConfig config = ScheduleConfig{}, IEventLog* log = nullptr);
 
     Result<std::vector<TaskRow>> list(const ListQuery& query) const;
     Result<Stats> stats() const;
@@ -83,6 +103,12 @@ public:
     Result<PlanView> plan_today(RankMode rank = RankMode::Score) const;
     Result<PlanView> plan_week(RankMode rank = RankMode::Score) const;
 
+    // M3：周统计与 SM-2 复习（ADR-0004）。
+    Result<WeeklyStatsView> weekly_stats() const;
+    Result<TaskRow> grade_review(TaskId id, int quality,
+                                 std::optional<Minutes> spent = std::nullopt);
+    Result<std::vector<TaskRow>> due_reviews() const;
+
 private:
     Result<Task> build_task(TaskId id, const TaskForm& form) const;
     Result<PlanView> plan(bool week, RankMode rank) const;
@@ -90,6 +116,7 @@ private:
     ITaskRepository& repo_;
     std::function<TimePoint()> clock_;
     ScheduleConfig config_;
+    IEventLog* log_{nullptr};
 };
 
 }  // namespace ordo

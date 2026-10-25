@@ -56,6 +56,21 @@
   - 文档：`docs/adr/0003-planning.md`、OUTLINE / DATA-FORMAT / GUI-INTERFACE 同步
   - 测试：86 个用例（新增 packer / config / plan_service 与类型相关用例）
 
+- 2026-10-25 · **M3 长期能力**
+  - `io/event_log.h/.cpp`：`IEventLog` / `CsvEventLog`，写操作追加到 `data/log.csv`，
+    表头 `timestamp,command,task_id,minutes,note`，CLI 与 GUI 共用同一套事件名
+  - `core/task` + `io/file_repository`：追加 `ease_factor` / `interval_days` /
+    `last_review` 三列（13 列），兼容 8/10/13 列表头并在保存时迁移
+  - `algo/sm2`：标准 SM-2 质量 0–5、难度系数 `[1.3, 5.0]`、间隔上限 365 天，
+    以及到期判断与剩余天数
+  - `app/task_service`：`set_state` / `grade_review` / `due_reviews` / `weekly_stats`；
+    写操作统一落日志，日志失败不阻断业务
+  - `cli`：新增 `task review`、`stats week`、`task done --spent`；列表显示复习状态；
+    菜单新增“复习到期”“本周统计”
+  - `ui/AppModel` + `gui`：复习状态列、复习评分弹窗、右侧本周统计；
+    GUI 与 CLI 写同一份 `log.csv`
+  - `docs/adr/0004-tracking.md`；OUTLINE / DATA-FORMAT / GUI-INTERFACE / CODE-GUIDE 同步
+  - 测试：117 个用例（新增 SM-2、事件日志、周统计、13 列迁移与复习界面模型用例）
+
 ### Planned
-- M3 长期能力：执行日志、周统计、SM-2 间隔复习
 - M4 交付：测试数据集、实验报告、演示脚本

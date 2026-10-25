@@ -9,12 +9,14 @@
 
 #include "ordo/core/types.h"
 #include "ordo/io/config.h"
+#include "ordo/io/event_log.h"
 #include "ordo/io/repository.h"
 
 namespace ordo {
 
 struct AppContext {
     ITaskRepository& repo;
+    IEventLog* log;  // 可空；生产装配点传入 CsvEventLog
     std::ostream& out;
     std::istream& in;
     std::function<TimePoint()> clock;

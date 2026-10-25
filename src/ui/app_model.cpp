@@ -7,6 +7,7 @@
 #include <unordered_map>
 #include <utility>
 
+#include "ordo/algo/sm2.h"
 #include "ordo/app/plan_service.h"
 #include "ordo/core/schedule.h"
 
@@ -33,7 +34,7 @@ Result<T> forward_failure(const Status& status) {
     return Result<T>::fail(status.code, status.message);
 }
 
-TaskRow to_row(const Task& task) {
+TaskRow to_row(const Task& task, TimePoint now) {
     TaskRow row;
     row.id = task.id;
     row.title = task.title;
@@ -43,16 +44,26 @@ TaskRow to_row(const Task& task) {
     row.estimate = task.estimate;
     row.deadline_text = format_datetime(task.deadline);
     row.state = task.state;
+    if (task.kind == TaskKind::Review) {
+        if (!task.last_review.has_value()) {
+            row.review_text = "未复习";
+        } else if (review_due(task, now)) {
+            row.review_text = "到期";
+        } else {
+            row.review_text = std::to_string(review_days_until_due(task, now)) + " 天后";
+        }
+    }
     return row;
 }
 
 }  // namespace
 
-AppModel::AppModel(ITaskRepository& repo, std::function<TimePoint()> clock, ScheduleConfig config)
-    : repo_(repo), clock_(std::move(clock)), config_(config) {}
+AppModel::AppModel(ITaskRepository& repo, std::function<TimePoint()> clock, ScheduleConfig config,
+                   IEventLog* log)
+    : repo_(repo), clock_(std::move(clock)), config_(config), log_(log) {}
 
 Result<std::vector<TaskRow>> AppModel::list(const ListQuery& query) const {
-    TaskService service(repo_);
+    TaskService service(repo_, log_);
     auto result = service.list_ranked(query.state, query.rank, clock_());
     if (!result.has_value()) {
         return forward_failure<std::vector<TaskRow>>(result.status());
@@ -65,19 +76,19 @@ Result<std::vector<TaskRow>> AppModel::list(const ListQuery& query) const {
         if (!query.state.has_value() && query.open_only && !is_open(task.state)) {
             continue;
         }
-        rows.push_back(to_row(task));
+        rows.push_back(to_row(task, clock_()));
     }
 
     return Result<std::vector<TaskRow>>::ok(std::move(rows));
 }
 
 Result<Stats> AppModel::stats() const {
-    TaskService service(repo_);
+    TaskService service(repo_, log_);
     return service.stats(clock_());
 }
 
 Result<TaskForm> AppModel::form_for(TaskId id) const {
-    TaskService service(repo_);
+    TaskService service(repo_, log_);
     auto found = service.get(id);
     if (!found.has_value()) {
         return forward_failure<TaskForm>(found.status());
@@ -172,7 +183,7 @@ Result<TaskId> AppModel::create(const TaskForm& form) {
         return forward_failure<TaskId>(built.status());
     }
 
-    TaskService service(repo_);
+    TaskService service(repo_, log_);
     auto created = service.add(std::move(built.value()));
     if (!created.has_value()) {
         return forward_failure<TaskId>(created.status());
@@ -187,7 +198,7 @@ Status AppModel::update(TaskId id, const TaskForm& form) {
         return built.status();
     }
 
-    TaskService service(repo_);
+    TaskService service(repo_, log_);
     auto existing = service.get(id);
     if (!existing.has_value()) {
         return existing.status();
@@ -196,26 +207,21 @@ Status AppModel::update(TaskId id, const TaskForm& form) {
     // 表单不编辑复习状态，更新时保留原值（M3 的 SM-2 数据不能因为改标题而丢失）。
     Task task = std::move(built.value());
     task.review_stage = existing.value().review_stage;
+    task.ease_factor = existing.value().ease_factor;
+    task.interval_days = existing.value().interval_days;
     task.last_review = existing.value().last_review;
 
     return service.update(id, task);
 }
 
 Status AppModel::remove(TaskId id) {
-    TaskService service(repo_);
+    TaskService service(repo_, log_);
     return service.remove(id);
 }
 
 Status AppModel::set_state(TaskId id, TaskState state) {
-    TaskService service(repo_);
-    auto existing = service.get(id);
-    if (!existing.has_value()) {
-        return existing.status();
-    }
-
-    Task task = std::move(existing.value());
-    task.state = state;
-    return service.update(id, task);
+    TaskService service(repo_, log_);
+    return service.set_state(id, state);
 }
 
 Result<PlanView> AppModel::plan_today(RankMode rank) const {
@@ -235,7 +241,7 @@ Result<PlanView> AppModel::plan(bool week, RankMode rank) const {
         return forward_failure<PlanView>(planned.status());
     }
 
-    TaskService service(repo_);
+    TaskService service(repo_, log_);
     auto all = service.list(std::nullopt);
     if (!all.has_value()) {
         return forward_failure<PlanView>(all.status());
@@ -285,6 +291,64 @@ Result<PlanView> AppModel::plan(bool week, RankMode rank) const {
     }
 
     return Result<PlanView>::ok(std::move(view));
+}
+
+Result<WeeklyStatsView> AppModel::weekly_stats() const {
+    const TimePoint now = clock_();
+    TaskService service(repo_, log_);
+    auto stats = service.weekly_stats(now);
+    if (!stats.has_value()) {
+        return forward_failure<WeeklyStatsView>(stats.status());
+    }
+
+    const WeeklyStats& source = stats.value();
+    WeeklyStatsView view;
+    view.window_text = format_date(source.window_begin) + " ~ " + format_date(source.window_end);
+    view.completed = source.completed;
+    view.expected = source.expected;
+    view.has_rate = source.has_rate;
+    view.completion_percent = source.completion_percent;
+    view.total_minutes = source.total_minutes;
+
+    view.by_kind.reserve(source.by_kind.size());
+    for (const KindMinutes& item : source.by_kind) {
+        KindMinutesRow row;
+        row.kind_label = std::string{kind_label(item.kind)};
+        row.minutes = item.minutes;
+        row.percent = source.total_minutes > 0
+                          ? static_cast<int>(item.minutes * 100 / source.total_minutes)
+                          : 0;
+        view.by_kind.push_back(std::move(row));
+    }
+
+    return Result<WeeklyStatsView>::ok(std::move(view));
+}
+
+Result<TaskRow> AppModel::grade_review(TaskId id, int quality, std::optional<Minutes> spent) {
+    const TimePoint now = clock_();
+    TaskService service(repo_, log_);
+    auto graded = service.grade_review(id, quality, now, spent);
+    if (!graded.has_value()) {
+        return forward_failure<TaskRow>(graded.status());
+    }
+
+    return Result<TaskRow>::ok(to_row(graded.value(), now));
+}
+
+Result<std::vector<TaskRow>> AppModel::due_reviews() const {
+    const TimePoint now = clock_();
+    TaskService service(repo_, log_);
+    auto due = service.due_reviews(now);
+    if (!due.has_value()) {
+        return forward_failure<std::vector<TaskRow>>(due.status());
+    }
+
+    std::vector<TaskRow> rows;
+    rows.reserve(due.value().size());
+    for (const Task& task : due.value()) {
+        rows.push_back(to_row(task, now));
+    }
+    return Result<std::vector<TaskRow>>::ok(std::move(rows));
 }
 
 }  // namespace ordo

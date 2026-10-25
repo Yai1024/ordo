@@ -11,6 +11,7 @@
 #include <utility>
 #include <vector>
 
+#include "ordo/algo/sm2.h"
 #include "ordo/app/task_service.h"
 #include "ordo/core/task.h"
 #include "ordo/core/types.h"
@@ -70,12 +71,23 @@ void print_table_header(std::ostream& out) {
         << std::setw(5) << "EST" << std::setw(18) << "DEADLINE" << "TITLE [类型]\n";
 }
 
-void print_task_row(std::ostream& out, const Task& task) {
+void print_task_row(std::ostream& out, const Task& task, TimePoint now) {
     out << std::left << std::setw(4) << task.id << std::setw(8) << to_string(task.state)
         << std::setw(4) << task.importance << std::setw(5) << task.estimate << std::setw(18)
         << format_datetime(task.deadline) << task.title << " [" << kind_label(task.kind) << ']';
     if (!task.course.empty()) {
         out << " (" << task.course << ')';
+    }
+    if (task.kind == TaskKind::Review) {
+        out << " {";
+        if (!task.last_review.has_value()) {
+            out << "未复习";
+        } else if (review_due(task, now)) {
+            out << "复习到期";
+        } else {
+            out << review_days_until_due(task, now) << " 天后复习";
+        }
+        out << '}';
     }
     out << '\n';
 }
@@ -185,7 +197,7 @@ public:
         draft.kind = kind;
         draft.fixed_start = fixed_start;
 
-        TaskService service(ctx.repo);
+        TaskService service(ctx.repo, ctx.log);
         auto result = service.add(std::move(draft));
         if (!result) {
             return report_error(ctx, result.status());
@@ -246,7 +258,7 @@ public:
             }
         }
 
-        TaskService service(ctx.repo);
+        TaskService service(ctx.repo, ctx.log);
         auto result = service.list_ranked(state_filter, mode, ctx.now());
         if (!result) {
             return report_error(ctx, result.status());
@@ -267,8 +279,9 @@ public:
         }
 
         print_table_header(ctx.out);
+        const TimePoint now = ctx.now();
         for (const Task& task : tasks) {
-            print_task_row(ctx.out, task);
+            print_task_row(ctx.out, task, now);
         }
         ctx.out << "共 " << tasks.size() << " 条\n";
         return kExitOk;
@@ -280,7 +293,9 @@ public:
 class TaskDoneCommand final : public Command {
 public:
     std::string_view name() const noexcept override { return "task.done"; }
-    std::string_view help() const noexcept override { return "标记完成: task done <id>"; }
+    std::string_view help() const noexcept override {
+        return "标记完成: task done <id> [--spent 分钟]";
+    }
 
     int execute(const Args& args, AppContext& ctx) override {
         const std::optional<TaskId> id = task_id_from(args);
@@ -288,25 +303,103 @@ public:
             return usage_error(ctx, "缺少或非法任务 id", help());
         }
 
-        TaskService service(ctx.repo);
+        std::optional<Minutes> spent;
+        if (const std::optional<std::string> value = args.flag("spent")) {
+            const std::optional<int> parsed = parse_int_value(*value);
+            if (!parsed.has_value() || *parsed < 0) {
+                return usage_error(ctx, "--spent 必须是非负整数", help());
+            }
+            spent = static_cast<Minutes>(*parsed);
+        }
+
+        TaskService service(ctx.repo, ctx.log);
         auto found = service.get(*id);
         if (!found) {
             return report_error(ctx, found.status());
         }
 
-        Task task = std::move(found.value());
+        const Task& task = found.value();
         if (task.state == TaskState::Done) {
             ctx.out << "任务 #" << task.id << " 已经是完成状态\n";
             return kExitOk;
         }
 
-        task.state = TaskState::Done;
-        const Status updated = service.update(task.id, task);
+        const Status updated = service.set_state(*id, TaskState::Done, spent);
         if (!updated.ok()) {
             return report_error(ctx, updated);
         }
 
-        ctx.out << "任务 #" << task.id << " 已标记完成：" << task.title << '\n';
+        ctx.out << "任务 #" << task.id << " 已标记完成：" << task.title;
+        if (spent.has_value()) {
+            ctx.out << "（投入 " << *spent << " 分钟）";
+        }
+        ctx.out << '\n';
+        return kExitOk;
+    }
+};
+
+// ---- task.review ----
+
+class TaskReviewCommand final : public Command {
+public:
+    std::string_view name() const noexcept override { return "task.review"; }
+
+    std::string_view help() const noexcept override {
+        return "复习: task review [<id> --quality 0..5 [--spent 分钟]]";
+    }
+
+    int execute(const Args& args, AppContext& ctx) override {
+        TaskService service(ctx.repo, ctx.log);
+        const TimePoint now = ctx.now();
+
+        // 不带 id：列出到期复习任务，方便先看再做。
+        if (args.positional.empty()) {
+            auto due = service.due_reviews(now);
+            if (!due) {
+                return report_error(ctx, due.status());
+            }
+            if (due.value().empty()) {
+                ctx.out << "（没有到期的复习任务）\n";
+                return kExitOk;
+            }
+
+            print_table_header(ctx.out);
+            for (const Task& task : due.value()) {
+                print_task_row(ctx.out, task, now);
+            }
+            ctx.out << "共 " << due.value().size() << " 条到期\n";
+            return kExitOk;
+        }
+
+        const std::optional<TaskId> id = task_id_from(args);
+        if (!id.has_value()) {
+            return usage_error(ctx, "非法任务 id", help());
+        }
+
+        const std::optional<std::string> quality_text = args.flag("quality");
+        const std::optional<int> quality =
+            quality_text.has_value() ? parse_int_value(*quality_text) : std::nullopt;
+        if (!quality.has_value() || *quality < 0 || *quality > 5) {
+            return usage_error(ctx, "复习评分需要 --quality 0..5（0 忘记，5 毫不费力）", help());
+        }
+
+        std::optional<Minutes> spent;
+        if (const std::optional<std::string> value = args.flag("spent")) {
+            const std::optional<int> parsed = parse_int_value(*value);
+            if (!parsed.has_value() || *parsed < 0) {
+                return usage_error(ctx, "--spent 必须是非负整数", help());
+            }
+            spent = static_cast<Minutes>(*parsed);
+        }
+
+        auto graded = service.grade_review(*id, *quality, now, spent);
+        if (!graded) {
+            return report_error(ctx, graded.status());
+        }
+
+        const Task& task = graded.value();
+        ctx.out << "任务 #" << task.id << " 已复习：" << task.title << "（质量 " << *quality
+                << "，下次 " << task.interval_days << " 天后）\n";
         return kExitOk;
     }
 };
@@ -329,7 +422,7 @@ public:
             return usage_error(ctx, "缺少或非法任务 id", help());
         }
 
-        TaskService service(ctx.repo);
+        TaskService service(ctx.repo, ctx.log);
         auto found = service.get(*id);
         if (!found) {
             return report_error(ctx, found.status());
@@ -447,7 +540,7 @@ public:
             return usage_error(ctx, "缺少或非法任务 id", help());
         }
 
-        TaskService service(ctx.repo);
+        TaskService service(ctx.repo, ctx.log);
         const Status removed = service.remove(*id);
         if (!removed.ok()) {
             return report_error(ctx, removed);
@@ -466,7 +559,7 @@ public:
     std::string_view help() const noexcept override { return "统计概览: task stats"; }
 
     int execute(const Args& /*args*/, AppContext& ctx) override {
-        TaskService service(ctx.repo);
+        TaskService service(ctx.repo, ctx.log);
         auto result = service.stats(ctx.now());
         if (!result) {
             return report_error(ctx, result.status());
@@ -492,6 +585,7 @@ void register_task_commands(Dispatcher& dispatcher) {
     dispatcher.add(std::make_unique<TaskEditCommand>());
     dispatcher.add(std::make_unique<TaskRemoveCommand>());
     dispatcher.add(std::make_unique<TaskStatsCommand>());
+    dispatcher.add(std::make_unique<TaskReviewCommand>());
 }
 
 }  // namespace ordo

@@ -81,6 +81,8 @@ int Menu::run(AppContext& ctx) {
                 << "  6. 统计概览\n"
                 << "  7. 今日计划\n"
                 << "  8. 本周计划\n"
+                << "  9. 复习到期\n"
+                << " 10. 本周统计\n"
                 << "  0. 退出\n"
                 << "请选择: ";
 
@@ -111,8 +113,12 @@ int Menu::run(AppContext& ctx) {
             keep_running = handle_plan(ctx, false);
         } else if (choice == "8") {
             keep_running = handle_plan(ctx, true);
+        } else if (choice == "9") {
+            keep_running = handle_review(ctx);
+        } else if (choice == "10") {
+            keep_running = handle_stats_week(ctx);
         } else {
-            ctx.out << "无效选项，请输入 0-8\n";
+            ctx.out << "无效选项，请输入 0-10\n";
         }
 
         if (!keep_running) {
@@ -207,7 +213,7 @@ bool Menu::handle_edit(AppContext& ctx) {
         return true;
     }
 
-    TaskService service(ctx.repo);
+    TaskService service(ctx.repo, ctx.log);
     auto found = service.get(*id);
     if (!found) {
         ctx.out << "错误: " << found.status().message << '\n';
@@ -322,6 +328,44 @@ bool Menu::handle_stats(AppContext& ctx) {
 
 bool Menu::handle_plan(AppContext& ctx, bool week) {
     dispatcher_.execute(week ? "plan.week" : "plan.today", Args{}, ctx);
+    return true;
+}
+
+bool Menu::handle_review(AppContext& ctx) {
+    dispatcher_.execute("task.review", Args{}, ctx);
+
+    const std::optional<std::string> id_text = prompt(ctx, "要评分的任务 id（直接回车返回）: ");
+    if (!id_text.has_value()) {
+        return false;
+    }
+    if (trim(*id_text).empty()) {
+        return true;
+    }
+    const std::optional<TaskId> id = parse_id(*id_text);
+    if (!id.has_value()) {
+        ctx.out << "任务 id 非法。\n";
+        return true;
+    }
+
+    const std::optional<std::string> quality_text = prompt(ctx, "复习质量 0-5: ");
+    if (!quality_text.has_value()) {
+        return false;
+    }
+    const std::string_view cleaned = trim(*quality_text);
+    if (cleaned.size() != 1 || cleaned[0] < '0' || cleaned[0] > '5') {
+        ctx.out << "复习质量必须是 0 到 5 的单个数字。\n";
+        return true;
+    }
+
+    Args args;
+    args.positional.push_back(std::to_string(*id));
+    args.flags["quality"] = std::string{cleaned};
+    dispatcher_.execute("task.review", args, ctx);
+    return true;
+}
+
+bool Menu::handle_stats_week(AppContext& ctx) {
+    dispatcher_.execute("stats.week", Args{}, ctx);
     return true;
 }
 

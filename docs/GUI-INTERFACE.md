@@ -20,15 +20,18 @@ gui/（任何外壳）──▶ ui::AppModel ──▶ app::TaskService ──�
 ## 2. 构造
 
 ```cpp
+#include "ordo/io/event_log.h"
 #include "ordo/io/file_repository.h"
 #include "ordo/ui/app_model.h"
 
 ordo::CsvTaskRepository repo("data/tasks.csv");
+ordo::CsvEventLog log("data/log.csv");
 auto config = ordo::load_config("data/config.ini");
-ordo::AppModel model(repo, [] { return ordo::Clock::now(); }, config.value());
+ordo::AppModel model(repo, [] { return ordo::Clock::now(); }, config.value(), &log);
 ```
 
 - `repo` 必须是 `ITaskRepository&`，生命周期长于 `AppModel`。
+- `log` 可空：不传时不写事件日志；生产装配点应传入，CLI 与 GUI 共用同一份实现。
 - 时钟以函数注入：测试时返回固定时间，正式运行时用 `Clock::now()`。
 - `ScheduleConfig` 由装配点读取后注入；缺省构造使用内置默认值。
 - `AppModel` 自身不保存界面状态（选中行、滚动位置由外壳自己管）。
@@ -46,7 +49,8 @@ ordo::AppModel model(repo, [] { return ordo::Clock::now(); }, config.value());
 ### `TaskRow` — 列表一行
 
 `id`、`title`、`course`、`kind_label`（中文类型名）、`importance`、`estimate`、
-`deadline_text`（`YYYY-MM-DD HH:MM`）、`state`。
+`deadline_text`（`YYYY-MM-DD HH:MM`）、`state`、`review_text`。
+`review_text` 只对复习任务有值：`未复习` / `到期` / `N 天后`，其余为空字符串。
 字符串已经是 UTF-8，外壳负责转成自己的显示编码。
 
 ### `TaskForm` — 新增/编辑表单
@@ -70,6 +74,9 @@ ordo::AppModel model(repo, [] { return ordo::Clock::now(); }, config.value());
 | `set_state(id, state)` | `Status` | 改状态（标记完成、进行中等） |
 | `plan_today(rank)` | `Result<PlanView>` | 今日计划：时间块 + 告警 + 时长汇总 |
 | `plan_week(rank)` | `Result<PlanView>` | 滚动 7 天计划 |
+| `weekly_stats()` | `Result<WeeklyStatsView>` | 最近 7 天完成率与投入分布（M3） |
+| `grade_review(id, quality, spent)` | `Result<TaskRow>` | SM-2 评分；`quality` 0–5，`spent` 可空（M3） |
+| `due_reviews()` | `Result<std::vector<TaskRow>>` | 到期复习任务列表（M3） |
 
 失败一律通过 `Status { code, message }` 返回，`message` 是可直接显示的中文。
 
@@ -127,7 +134,40 @@ Result<PlanView> plan_week(RankMode rank = RankMode::Score) const;
 计划不持久化，每次调用都按当前任务与配置重新计算。
 `AppModel` 的现有方法签名保持稳定；新增方法向后兼容。
 
-## 8. 替换 Win32 外壳
+## 8. 周统计与复习（M3）
+
+### WeeklyStatsView
+
+```cpp
+struct KindMinutesRow {
+    std::string kind_label;   // 课程作业 / 自主学习 / ...
+    Minutes minutes{0};
+    int percent{0};           // 占本周投入的百分比，向下取整
+};
+
+struct WeeklyStatsView {
+    std::string window_text;  // "2026-10-19 ~ 2026-10-25"
+    std::size_t completed{0};
+    std::size_t expected{0};
+    bool has_rate{false};     // 应完成数为 0 时为 false，外壳显示 "--"
+    int completion_percent{0};
+    Minutes total_minutes{0};
+    std::vector<KindMinutesRow> by_kind;  // 按分钟数降序，只含有投入的类型
+};
+```
+
+外壳只需把 `by_kind` 逐行渲染；口径由 `app::TaskService::weekly_stats` 负责，
+不得在界面层重算（ADR-0004）。
+
+### 复习
+
+- 列表用 `TaskRow.review_text` 显示复习状态，不需要外壳自行计算日期。
+- "复习"动作：先确认选中任务是复习类（`kind_label == "复习考试"`），
+  收集 `quality`（0–5）与可选 `spent`（分钟），调用 `grade_review`。
+- 成功后刷新列表、统计与计划；失败显示 `status.message`，不要关闭评分窗口。
+- `due_reviews()` 供"只看到期"之类的筛选使用，当前 Win32 外壳未做独立入口。
+
+## 9. 替换 Win32 外壳
 
 删除 `src/gui/` 与 Makefile 里的 GUI 目标不会影响 `ordo.exe`、`ordo_test.exe`。
 新外壳只需：

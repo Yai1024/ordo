@@ -25,8 +25,12 @@ constexpr Minutes kMinutesPerHour = 60;
 // 只给日期时按当天 23:59 处理，符合"当天截止"的日常语义。
 std::optional<TimePoint> parse_datetime(std::string_view text);
 
+// 事件日志专用：带秒的 "YYYY-MM-DD HH:MM:SS"（ADR-0004）。
+std::optional<TimePoint> parse_datetime_seconds(std::string_view text);
+
 // 固定格式 "YYYY-MM-DD HH:MM" / "YYYY-MM-DD" / "HH:MM"。
 std::string format_datetime(TimePoint point);
+std::string format_datetime_seconds(TimePoint point);
 std::string format_date(TimePoint point);
 std::string format_time(TimePoint point);
 

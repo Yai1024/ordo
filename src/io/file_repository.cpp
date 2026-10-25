@@ -21,8 +21,12 @@ constexpr std::string_view kHeaderV1 =
     "id,title,course,importance,estimate,deadline,state,review_stage";
 constexpr std::string_view kHeaderV2 =
     "id,title,course,importance,estimate,deadline,state,review_stage,kind,fixed_start";
+constexpr std::string_view kHeaderV3 =
+    "id,title,course,importance,estimate,deadline,state,review_stage,kind,fixed_start,"
+    "ease_factor,interval_days,last_review";
 constexpr std::size_t kColumnCountV1 = 8;
 constexpr std::size_t kColumnCountV2 = 10;
+constexpr std::size_t kColumnCountV3 = 13;
 
 bool parse_u64(std::string_view text, std::uint64_t& out) {
     if (text.empty()) {
@@ -42,6 +46,28 @@ bool parse_int(std::string_view text, int& out) {
     const char* last = text.data() + text.size();
     const std::from_chars_result result = std::from_chars(first, last, out);
     return result.ec == std::errc{} && result.ptr == last;
+}
+
+bool parse_double(std::string_view text, double& out) {
+    if (text.empty()) {
+        return false;
+    }
+    const char* first = text.data();
+    const char* last = text.data() + text.size();
+    const std::from_chars_result result =
+        std::from_chars(first, last, out, std::chars_format::fixed);
+    return result.ec == std::errc{} && result.ptr == last;
+}
+
+// 固定两位小数，保证 CSV 可读且往返稳定。
+std::string format_ease(double value) {
+    char buffer[32] = {};
+    const auto result =
+        std::to_chars(buffer, buffer + sizeof(buffer), value, std::chars_format::fixed, 2);
+    if (result.ec != std::errc{}) {
+        return std::string{"2.50"};
+    }
+    return std::string(buffer, result.ptr);
 }
 
 Result<std::vector<Task>> fail_tasks(ErrorCode code, std::string message) {
@@ -71,7 +97,6 @@ Result<std::vector<Task>> CsvTaskRepository::load_all() const {
     std::string line;
     std::size_t line_number = 0;
     bool header_seen = false;
-    bool has_kind_columns = false;
     std::size_t expected_columns = 0;
 
     while (std::getline(input, line)) {
@@ -90,18 +115,17 @@ Result<std::vector<Task>> CsvTaskRepository::load_all() const {
         }
 
         if (!header_seen) {
-            // 同时接受旧 8 列与新 10 列表头，旧文件在读取时就地兼容（ADR-0003）。
-            if (view == kHeaderV2) {
-                has_kind_columns = true;
+            // 同时接受 M1/M2/M3 三代表头，旧文件在读取时就地兼容（ADR-0004）。
+            if (view == kHeaderV3) {
+                expected_columns = kColumnCountV3;
+            } else if (view == kHeaderV2) {
                 expected_columns = kColumnCountV2;
             } else if (view == kHeaderV1) {
-                has_kind_columns = false;
                 expected_columns = kColumnCountV1;
             } else {
                 return fail_tasks(ErrorCode::Corrupted,
                                   line_prefix(line_number) + "表头不匹配，应为: " +
-                                      std::string{kHeaderV2} + "（或旧版 " +
-                                      std::string{kHeaderV1} + "）");
+                                      std::string{kHeaderV3} + "（或旧版 V1/V2 表头）");
             }
             header_seen = true;
             continue;
@@ -167,7 +191,7 @@ Result<std::vector<Task>> CsvTaskRepository::load_all() const {
         task.state = *state;
         task.review_stage = review_stage;
 
-        if (has_kind_columns) {
+        if (expected_columns >= kColumnCountV2) {
             // 旧数据迁移时 kind 可能为空，按 other 处理（ADR-0003）。
             if (fields[8].empty()) {
                 task.kind = TaskKind::Other;
@@ -190,6 +214,33 @@ Result<std::vector<Task>> CsvTaskRepository::load_all() const {
                                           "fixed_start 格式应为 YYYY-MM-DD HH:MM: " + fields[9]);
                 }
                 task.fixed_start = *fixed_start;
+            }
+        }
+
+        if (expected_columns >= kColumnCountV3) {
+            double ease = kDefaultEase;
+            int interval_days = 0;
+            if (!parse_double(fields[10], ease)) {
+                return fail_tasks(ErrorCode::InvalidFormat,
+                                  line_prefix(line_number) +
+                                      "ease_factor 不是合法小数: " + fields[10]);
+            }
+            if (!parse_int(fields[11], interval_days)) {
+                return fail_tasks(ErrorCode::InvalidFormat,
+                                  line_prefix(line_number) +
+                                      "interval_days 不是合法整数: " + fields[11]);
+            }
+            task.ease_factor = ease;
+            task.interval_days = interval_days;
+
+            if (!fields[12].empty()) {
+                const std::optional<TimePoint> last_review = parse_datetime(fields[12]);
+                if (!last_review.has_value()) {
+                    return fail_tasks(ErrorCode::InvalidFormat,
+                                      line_prefix(line_number) +
+                                          "last_review 格式应为 YYYY-MM-DD HH:MM: " + fields[12]);
+                }
+                task.last_review = *last_review;
             }
         }
 
@@ -240,8 +291,8 @@ Status CsvTaskRepository::save_all(const std::vector<Task>& tasks) {
         return Status::fail(ErrorCode::IoError, "无法写入临时文件: " + temp_path.string());
     }
 
-    // 统一写新表头：旧文件在第一次保存时自动迁移（ADR-0003）。
-    output << kHeaderV2 << '\n';
+    // 统一写新表头：旧文件在第一次保存时自动迁移（ADR-0004）。
+    output << kHeaderV3 << '\n';
     for (const Task& task : tasks) {
         const std::vector<std::string> fields{
             std::to_string(task.id),
@@ -254,6 +305,9 @@ Status CsvTaskRepository::save_all(const std::vector<Task>& tasks) {
             std::to_string(task.review_stage),
             std::string{to_string(task.kind)},
             task.fixed_start.has_value() ? format_datetime(*task.fixed_start) : std::string{},
+            format_ease(task.ease_factor),
+            std::to_string(task.interval_days),
+            task.last_review.has_value() ? format_datetime(*task.last_review) : std::string{},
         };
         output << csv::join_fields(fields) << '\n';
     }

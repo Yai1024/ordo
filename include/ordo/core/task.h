@@ -24,6 +24,12 @@ constexpr int kMinImportance = 1;
 constexpr int kMaxImportance = 5;
 constexpr int kDefaultImportance = 3;
 
+// SM-2 参数的边界（ADR-0004）。上限 365 天是工程约束，不是 SM-2 原文。
+constexpr double kMinEase = 1.3;
+constexpr double kMaxEase = 5.0;
+constexpr double kDefaultEase = 2.5;
+constexpr int kMaxIntervalDays = 365;
+
 struct Task {
     TaskId id{};
     std::string title;
@@ -32,8 +38,10 @@ struct Task {
     Minutes estimate{0};
     TimePoint deadline{};
     TaskState state{TaskState::Todo};
-    int review_stage{0};
-    std::optional<TimePoint> last_review;  // 仅 M3 使用，CSV 不持久化
+    int review_stage{0};                  // SM-2 重复次数，0 表示未进入复习
+    double ease_factor{kDefaultEase};     // SM-2 难度系数
+    int interval_days{0};                 // 当前复习间隔（天）
+    std::optional<TimePoint> last_review;  // 上次复习时刻；为空表示从未复习
     TaskKind kind{TaskKind::Other};
     std::optional<TimePoint> fixed_start;  // 仅 Activity：固定开始时刻
 

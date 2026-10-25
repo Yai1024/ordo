@@ -4,6 +4,7 @@
 #include "ordo/gui/main_window.h"
 #include "ordo/gui/win32_util.h"
 #include "ordo/io/config.h"
+#include "ordo/io/event_log.h"
 #include "ordo/io/file_repository.h"
 
 #include <commctrl.h>
@@ -77,6 +78,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE /*previous*/, PWSTR /*command_
     try {
         const std::filesystem::path data_path = resolve_data_path();
         ordo::CsvTaskRepository repo(data_path);
+        ordo::CsvEventLog event_log(data_path.parent_path() / "log.csv");
 
         const auto config = ordo::load_config(data_path.parent_path() / "config.ini");
         if (!config.has_value()) {
@@ -85,7 +87,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE /*previous*/, PWSTR /*command_
             return 1;
         }
 
-        ordo::gui::MainWindow window(repo, config.value());
+        ordo::gui::MainWindow window(repo, config.value(), &event_log);
 
         if (!window.create(instance, show_command)) {
             MessageBoxW(nullptr, L"主窗口创建失败。", L"Ordo", MB_OK | MB_ICONERROR);
